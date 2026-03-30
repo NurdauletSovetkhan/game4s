@@ -91,6 +91,7 @@ const game = {
   pointerId: null,
   dragPos: null,
   justStopped: false,
+  awaitingStopResolution: false,
   shotsRemaining: 0,
   currentQuestion: null,
   settings: {
@@ -170,7 +171,8 @@ function createTurnState() {
     checkpoint: { x: game.start.x || 0, y: game.start.y || 0 },
     shotUnlocked: false,
     shotsRemaining: 0,
-    justStopped: false
+    justStopped: false,
+    awaitingStopResolution: false
   };
 }
 
@@ -192,6 +194,7 @@ function saveActiveTurnState() {
   state.shotUnlocked = Boolean(game.shotUnlocked);
   state.shotsRemaining = Math.max(0, Math.round(game.shotsRemaining || 0));
   state.justStopped = Boolean(game.justStopped);
+  state.awaitingStopResolution = Boolean(game.awaitingStopResolution);
 }
 
 function loadTurnState(playerId) {
@@ -206,6 +209,7 @@ function loadTurnState(playerId) {
   game.shotUnlocked = Boolean(state.shotUnlocked);
   game.shotsRemaining = Math.max(0, Math.round(state.shotsRemaining || 0));
   game.justStopped = Boolean(state.justStopped);
+  game.awaitingStopResolution = Boolean(state.awaitingStopResolution);
   alignCameraToBall();
 }
 
@@ -698,6 +702,7 @@ function resetBallToCheckpoint() {
   game.pointerId = null;
   game.dragPos = null;
   game.justStopped = false;
+  game.awaitingStopResolution = false;
   alignCameraToBall();
 }
 
@@ -717,7 +722,8 @@ function loadLevel(index) {
         checkpoint: { x: level.start.x, y: level.start.y },
         shotUnlocked: false,
         shotsRemaining: 0,
-        justStopped: false
+        justStopped: false,
+        awaitingStopResolution: false
       };
     }
 
@@ -743,6 +749,21 @@ function loadLevel(index) {
 }
 
 function handleHazardDeath(textWithLife, textNoLife) {
+  if (isMultiplayer()) {
+    resetBallToCheckpoint();
+    playHazardSound();
+
+    if (game.shotsRemaining > 0) {
+      game.shotUnlocked = true;
+      saveActiveTurnState();
+      setMessage(`Препятствие! Осталось ударов: ${game.shotsRemaining}.`);
+      syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
+    } else {
+      endTurnAndSync('Ход завершён после препятствия.');
+    }
+    return;
+  }
+
   if (game.lives > 0) {
     addLives(-1);
     resetBallToCheckpoint();
@@ -895,7 +916,7 @@ function update(dt) {
   if (isMultiplayer() && !isMyTurn()) return;
 
   const moving = ballSpeed() > STOP_SPEED;
-  if (!moving && !game.ball.grounded) return;
+  if (!moving && !game.ball.grounded && !game.awaitingStopResolution) return;
 
   const level = game.levels[game.levelIndex];
   const b = game.ball;
@@ -973,9 +994,11 @@ function update(dt) {
         saveActiveTurnState();
         if (game.shotsRemaining > 0) {
           game.shotUnlocked = true;
+          game.awaitingStopResolution = false;
           setMessage(`Чекпоинт сохранён. Осталось ударов: ${game.shotsRemaining}.`);
           syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
         } else {
+          game.awaitingStopResolution = false;
           endTurnAndSync('Чекпоинт сохранён. Ход передан сопернику.');
         }
       } else {
@@ -1053,17 +1076,22 @@ function drawBottomSpikes() {
 
 function drawLivesHud() {
   if (isMultiplayer()) {
-    const myLives = getPlayerStats(game.multiplayer.playerId).lives;
-    const rivalLives = getPlayerStats(opponentPlayer()?.id).lives;
+    const meId = game.multiplayer.playerId;
+    const rival = opponentPlayer();
+    const myState = getTurnState(meId);
+    const rivalState = getTurnState(rival?.id);
+
+    const myShots = meId === game.multiplayer.turnPlayerId ? game.shotsRemaining : myState.shotsRemaining;
+    const rivalShots = rival?.id === game.multiplayer.turnPlayerId ? game.shotsRemaining : rivalState.shotsRemaining;
 
     ctx.save();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
     ctx.fillStyle = '#1f1f1f';
     ctx.font = '18px Handlee, sans-serif';
-    ctx.fillText(`Ты: ❤ ${myLives}`, canvas.width - 14, 12);
+    ctx.fillText(`Ты: ❤ ${myShots}`, canvas.width - 14, 12);
     ctx.fillStyle = '#333';
-    ctx.fillText(`Соперник: ❤ ${rivalLives}`, canvas.width - 14, 34);
+    ctx.fillText(`Соперник: ❤ ${rivalShots}`, canvas.width - 14, 34);
     ctx.restore();
     return;
   }
@@ -1345,6 +1373,7 @@ function endDrag(ev) {
   game.swingTime = 0.12;
   game.ball.grounded = false;
   game.justStopped = false;
+  game.awaitingStopResolution = true;
   game.shotUnlocked = false;
   if (isMultiplayer()) {
     game.shotsRemaining = Math.max(0, game.shotsRemaining - 1);

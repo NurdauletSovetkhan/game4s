@@ -43,6 +43,11 @@ body {
   flex-wrap: wrap;
 }
 
+#multiMeta {
+  font-size: 15px;
+  opacity: 0.9;
+}
+
 button {
   border: 2px solid #272727;
   background: #fffef8;
@@ -118,6 +123,47 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
+}
+
+.multiplayer-panel {
+  border: 2px solid #272727;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 0 0 10px;
+  background: #fffaf0;
+}
+
+.field-label {
+  display: block;
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.text-input {
+  border: 2px solid #272727;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1d1d1d;
+  font-family: 'Handlee', sans-serif;
+  font-size: 20px;
+  padding: 6px 10px;
+  width: 100%;
+}
+
+.join-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.join-row .text-input {
+  flex: 1;
+}
+
+.menu-status {
+  margin: 8px 0 0;
+  min-height: 20px;
 }
 
 .cat-btn {
@@ -239,6 +285,11 @@ canvas {
 
   .menu-grid {
     grid-template-columns: 1fr;
+  }
+
+  .join-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .modal {

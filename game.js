@@ -9,6 +9,11 @@ const categoryEl = document.getElementById('category');
 const messageEl = document.getElementById('message');
 const nextButton = document.getElementById('next');
 const restartButton = document.getElementById('restart');
+const multiMetaEl = document.getElementById('multiMeta');
+const roomCodeHudEl = document.getElementById('roomCode');
+const youNameEl = document.getElementById('youName');
+const opponentNameEl = document.getElementById('opponentName');
+const turnNameEl = document.getElementById('turnName');
 
 const quizModalEl = document.getElementById('quizModal');
 const questionLabelEl = document.getElementById('questionLabel');
@@ -31,6 +36,7 @@ const STOP_SPEED = 32;
 const ROLL_DAMPING = 0.985;
 const AIR_DAMPING = 0.999;
 const SPIKE_STEP = 28;
+const MULTI_POLL_MS = 1100;
 
 function updateCanvasViewport() {
   const isPhone = window.innerWidth <= 768;
@@ -344,6 +350,17 @@ const game = {
   camera: { x: 0, y: 0 },
   checkpoint: { x: 0, y: 0 },
   start: { x: 0, y: 0 },
+  multiplayer: {
+    enabled: false,
+    roomCode: '',
+    playerId: '',
+    players: [],
+    turnPlayerId: '',
+    statsByPlayer: {},
+    revision: 0,
+    pollTimer: null,
+    initializing: false
+  },
   lastTime: performance.now()
 };
 
@@ -355,13 +372,275 @@ function setMessage(text) {
   messageEl.textContent = text;
 }
 
+function isMultiplayer() {
+  return game.multiplayer.enabled;
+}
+
+function getPlayerById(playerId) {
+  return game.multiplayer.players.find((player) => player.id === playerId) || null;
+}
+
+function localPlayer() {
+  return getPlayerById(game.multiplayer.playerId);
+}
+
+function opponentPlayer() {
+  return game.multiplayer.players.find((player) => player.id !== game.multiplayer.playerId) || null;
+}
+
+function currentTurnPlayer() {
+  return getPlayerById(game.multiplayer.turnPlayerId);
+}
+
+function isMyTurn() {
+  return !isMultiplayer() || game.multiplayer.turnPlayerId === game.multiplayer.playerId;
+}
+
+function getPlayerStats(playerId) {
+  if (!playerId) return { score: 0, lives: 0 };
+  if (!game.multiplayer.statsByPlayer[playerId]) {
+    game.multiplayer.statsByPlayer[playerId] = { score: 0, lives: 0 };
+  }
+  return game.multiplayer.statsByPlayer[playerId];
+}
+
+function refreshScoreHud() {
+  if (!isMultiplayer()) {
+    scoreEl.textContent = String(game.score);
+    return;
+  }
+
+  const mine = getPlayerStats(game.multiplayer.playerId).score;
+  const rival = getPlayerStats(opponentPlayer()?.id).score;
+  scoreEl.textContent = `${mine}:${rival}`;
+}
+
+function applyTurnStatsToGame() {
+  if (!isMultiplayer()) return;
+  const stats = getPlayerStats(game.multiplayer.turnPlayerId);
+  game.score = Math.max(0, Math.round(stats.score));
+  game.lives = Math.max(0, Math.round(stats.lives));
+  refreshScoreHud();
+}
+
+function updateMultiplayerHud() {
+  if (!isMultiplayer()) {
+    if (multiMetaEl) multiMetaEl.hidden = true;
+    return;
+  }
+
+  if (multiMetaEl) multiMetaEl.hidden = false;
+
+  const me = localPlayer();
+  const rival = opponentPlayer();
+  const turn = currentTurnPlayer();
+
+  if (roomCodeHudEl) roomCodeHudEl.textContent = game.multiplayer.roomCode || '—';
+  if (youNameEl) youNameEl.textContent = me?.name || '—';
+  if (opponentNameEl) opponentNameEl.textContent = rival?.name || 'ожидание';
+  if (turnNameEl) turnNameEl.textContent = turn?.name || '—';
+}
+
+function serializeSnapshot() {
+  if (!isMultiplayer()) return null;
+  return {
+    levelIndex: game.levelIndex,
+    currentPar: game.currentPar,
+    strokes: game.strokes,
+    score: game.score,
+    lives: game.lives,
+    won: game.won,
+    dragging: false,
+    shotUnlocked: game.shotUnlocked,
+    justStopped: game.justStopped,
+    ball: { ...game.ball },
+    checkpoint: { ...game.checkpoint },
+    start: { ...game.start },
+    turnPlayerId: game.multiplayer.turnPlayerId,
+    statsByPlayer: game.multiplayer.statsByPlayer
+  };
+}
+
+function applySnapshot(snapshot) {
+  if (!snapshot) return;
+
+  if (typeof snapshot.levelIndex === 'number' && snapshot.levelIndex !== game.levelIndex) {
+    game.levelIndex = clamp(snapshot.levelIndex, 0, game.levels.length - 1);
+    const level = game.levels[game.levelIndex];
+    game.start = { ...level.start };
+    levelEl.textContent = String(game.levelIndex + 1);
+  }
+
+  if (typeof snapshot.currentPar === 'number') {
+    game.currentPar = snapshot.currentPar;
+    parEl.textContent = String(game.currentPar);
+  }
+
+  if (typeof snapshot.strokes === 'number') {
+    game.strokes = snapshot.strokes;
+    strokesEl.textContent = String(game.strokes);
+  }
+
+  if (typeof snapshot.won === 'boolean') {
+    game.won = snapshot.won;
+  }
+
+  if (typeof snapshot.shotUnlocked === 'boolean') {
+    game.shotUnlocked = snapshot.shotUnlocked;
+  }
+
+  if (typeof snapshot.justStopped === 'boolean') {
+    game.justStopped = snapshot.justStopped;
+  }
+
+  if (snapshot.ball) {
+    game.ball.x = snapshot.ball.x;
+    game.ball.y = snapshot.ball.y;
+    game.ball.vx = snapshot.ball.vx;
+    game.ball.vy = snapshot.ball.vy;
+    game.ball.grounded = Boolean(snapshot.ball.grounded);
+  }
+
+  if (snapshot.checkpoint) {
+    game.checkpoint = { ...snapshot.checkpoint };
+  }
+
+  if (snapshot.start) {
+    game.start = { ...snapshot.start };
+  }
+
+  if (snapshot.turnPlayerId) {
+    game.multiplayer.turnPlayerId = snapshot.turnPlayerId;
+  }
+
+  if (snapshot.statsByPlayer && typeof snapshot.statsByPlayer === 'object') {
+    game.multiplayer.statsByPlayer = snapshot.statsByPlayer;
+  }
+
+  applyTurnStatsToGame();
+  updateMultiplayerHud();
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.error || 'Network error');
+  }
+  return data;
+}
+
+function setTurnPlayer(turnPlayerId) {
+  if (!isMultiplayer()) return;
+  if (!turnPlayerId) return;
+  game.multiplayer.turnPlayerId = turnPlayerId;
+  applyTurnStatsToGame();
+  updateMultiplayerHud();
+}
+
+async function syncRoom({ passTurn = false, allowAnyPlayer = false } = {}) {
+  if (!isMultiplayer()) return;
+
+  const payload = {
+    roomCode: game.multiplayer.roomCode,
+    playerId: game.multiplayer.playerId,
+    passTurn,
+    allowAnyPlayer,
+    snapshot: serializeSnapshot()
+  };
+
+  const data = await fetchJson('./api/room/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  game.multiplayer.revision = data.room.revision || game.multiplayer.revision;
+  game.multiplayer.players = data.room.players || game.multiplayer.players;
+  setTurnPlayer(data.room.turnPlayerId || game.multiplayer.turnPlayerId);
+  updateMultiplayerHud();
+
+  if (!isMyTurn()) {
+    closeQuizModal();
+    const turn = currentTurnPlayer();
+    setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
+  } else if (!game.shotUnlocked) {
+    openQuizModal('Твой ход. Реши задачу для удара.');
+  }
+}
+
+async function pollRoomState() {
+  if (!isMultiplayer() || game.multiplayer.initializing) return;
+
+  try {
+    const data = await fetchJson(
+      `./api/room/state?room=${encodeURIComponent(game.multiplayer.roomCode)}&player=${encodeURIComponent(game.multiplayer.playerId)}`
+    );
+    const room = data.room;
+
+    game.multiplayer.players = room.players || game.multiplayer.players;
+    game.multiplayer.revision = room.revision || game.multiplayer.revision;
+    if (room.turnPlayerId) {
+      game.multiplayer.turnPlayerId = room.turnPlayerId;
+    }
+
+    if (room.snapshot) {
+      applySnapshot(room.snapshot);
+    } else {
+      updateMultiplayerHud();
+      applyTurnStatsToGame();
+    }
+
+    if (!isMyTurn()) {
+      closeQuizModal();
+      const turn = currentTurnPlayer();
+      setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
+    } else if (!game.shotUnlocked && !quizModalEl.hidden) {
+      setMessage('Твой ход. Реши задачу и сделай удар.');
+    }
+  } catch (error) {
+    setMessage(`Сеть: ${error.message}`);
+  }
+}
+
+function startMultiplayerPolling() {
+  if (!isMultiplayer()) return;
+  if (game.multiplayer.pollTimer) {
+    clearInterval(game.multiplayer.pollTimer);
+  }
+  game.multiplayer.pollTimer = setInterval(pollRoomState, MULTI_POLL_MS);
+}
+
+function endTurnAndSync(reasonText) {
+  if (!isMultiplayer()) return;
+  closeQuizModal();
+  game.shotUnlocked = false;
+  setMessage(reasonText);
+  syncRoom({ passTurn: true }).catch((error) => {
+    setMessage(`Сеть: ${error.message}`);
+  });
+}
+
 function setScore(value) {
   game.score = Math.max(0, Math.round(value));
-  scoreEl.textContent = String(game.score);
+  if (isMultiplayer()) {
+    const turnStats = getPlayerStats(game.multiplayer.turnPlayerId);
+    turnStats.score = game.score;
+  }
+  refreshScoreHud();
 }
 
 function setLives(value) {
   game.lives = Math.max(0, Math.round(value));
+  if (isMultiplayer()) {
+    const turnStats = getPlayerStats(game.multiplayer.turnPlayerId);
+    turnStats.lives = game.lives;
+  }
 }
 
 function addLives(value) {
@@ -448,6 +727,11 @@ function createQuestion() {
 }
 
 function openQuizModal(reasonText) {
+  if (isMultiplayer() && !isMyTurn()) {
+    closeQuizModal();
+    return;
+  }
+
   game.shotUnlocked = false;
   game.currentQuestion = createQuestion();
 
@@ -481,6 +765,11 @@ function onCorrectAnswer() {
 
 function handleAnswerSubmit() {
   initAudio();
+
+  if (isMultiplayer() && !isMyTurn()) {
+    setMessage('Сейчас ход соперника.');
+    return;
+  }
 
   if (!game.currentQuestion) return;
 
@@ -556,14 +845,21 @@ function handleHazardDeath(textWithLife, textNoLife) {
   if (game.lives > 0) {
     addLives(-1);
     resetBallToCheckpoint();
-    game.shotUnlocked = true;
+    game.shotUnlocked = !isMultiplayer();
     playHazardSound();
     setMessage(`${textWithLife} Осталось жизней: ${game.lives}.`);
+    if (isMultiplayer()) {
+      endTurnAndSync('Ход завершён после препятствия.');
+    }
     return;
   }
 
   resetBallToCheckpoint();
   playHazardSound();
+  if (isMultiplayer()) {
+    endTurnAndSync('Жизни закончились. Ход передан сопернику.');
+    return;
+  }
   openQuizModal(textNoLife);
 }
 
@@ -658,9 +954,6 @@ function resolveRectCollision(rect) {
 function finishLevel() {
   game.ball.vx = 0;
   game.ball.vy = 0;
-  game.won = true;
-  nextButton.disabled = game.levelIndex >= game.levels.length - 1;
-
   const delta = game.strokes - game.currentPar;
   const scoreText =
     delta === 0 ? 'в пар' : delta < 0 ? `${Math.abs(delta)} лучше пара` : `${delta} хуже пара`;
@@ -669,11 +962,31 @@ function finishLevel() {
   adjustScore(bonus);
   playHoleCompleteSound();
 
+  if (isMultiplayer()) {
+    const hasNextLevel = game.levelIndex < game.levels.length - 1;
+    if (hasNextLevel) {
+      loadLevel(game.levelIndex + 1);
+      endTurnAndSync(`Лунка пройдена (${scoreText}). Бонус +${bonus}. Ход сопернику.`);
+      return;
+    }
+
+    game.won = true;
+    setMessage(`Матч завершён! Последняя лунка: ${scoreText}. Бонус +${bonus}.`);
+    syncRoom({ passTurn: false, allowAnyPlayer: true }).catch((error) => {
+      setMessage(`Сеть: ${error.message}`);
+    });
+    return;
+  }
+
+  game.won = true;
+  nextButton.disabled = game.levelIndex >= game.levels.length - 1;
+
   setMessage(`Лунка пройдена: ${scoreText}. Бонус +${bonus}.`);
 }
 
 function update(dt) {
   if (!game.selectedCategory || game.won || game.dragging) return;
+  if (isMultiplayer() && !isMyTurn()) return;
 
   const moving = ballSpeed() > STOP_SPEED;
   if (!moving && !game.ball.grounded) return;
@@ -750,7 +1063,11 @@ function update(dt) {
 
     if (!game.justStopped) {
       playCheckpointSound();
-      openQuizModal('Чекпоинт сохранён. Реши новую задачу для следующего удара.');
+      if (isMultiplayer()) {
+        endTurnAndSync('Чекпоинт сохранён. Ход передан сопернику.');
+      } else {
+        openQuizModal('Чекпоинт сохранён. Реши новую задачу для следующего удара.');
+      }
       game.justStopped = true;
     }
   } else {
@@ -826,8 +1143,9 @@ function drawLivesHud() {
   const heartSize = isTouchLayout ? 34 : 24;
   const spacing = Math.round(heartSize * 0.76);
   const maxDraw = isTouchLayout ? 7 : 8;
-  const heartsToDraw = Math.min(game.lives, maxDraw);
-  const extra = Math.max(0, game.lives - maxDraw);
+  const displayedLives = isMultiplayer() ? getPlayerStats(game.multiplayer.playerId).lives : game.lives;
+  const heartsToDraw = Math.min(displayedLives, maxDraw);
+  const extra = Math.max(0, displayedLives - maxDraw);
   const startX = canvas.width - 14;
   const y = 12 + heartSize * 0.52;
 
@@ -847,7 +1165,7 @@ function drawLivesHud() {
     ctx.fillText(`+${extra}`, startX - heartsToDraw * spacing - 6, y + 1);
   }
 
-  if (game.lives === 0) {
+  if (displayedLives === 0) {
     ctx.fillStyle = '#555';
     ctx.font = `${Math.round(heartSize * 0.58)}px Handlee, sans-serif`;
     ctx.fillText('0 ❤', startX, y);
@@ -1025,6 +1343,7 @@ function startDrag(ev) {
   initAudio();
 
   if (!game.selectedCategory || game.won || !game.shotUnlocked || ballSpeed() > STOP_SPEED) return;
+  if (isMultiplayer() && !isMyTurn()) return;
 
   const pointer = getPointerPos(ev);
   const dx = pointer.x - game.ball.x;
@@ -1077,17 +1396,28 @@ function endDrag(ev) {
 
 function restartHole() {
   if (!game.selectedCategory) return;
+  if (isMultiplayer()) {
+    setMessage('В 1v1 рестарт лунки отключён.');
+    return;
+  }
   loadLevel(game.levelIndex);
 }
 
 function nextHole() {
   if (!game.selectedCategory) return;
+  if (isMultiplayer()) {
+    setMessage('В 1v1 переход вручную отключён.');
+    return;
+  }
   const nextLevel = clamp(game.levelIndex + 1, 0, game.levels.length - 1);
   loadLevel(nextLevel);
 }
 
-function initCategoryFromUrl() {
+async function initCategoryFromUrl() {
   const params = new URLSearchParams(window.location.search);
+  const mode = params.get('mode');
+  const roomCode = String(params.get('room') || '').trim().toUpperCase();
+  const playerId = String(params.get('player') || '').trim();
   const categoryId = params.get('category');
   const category = CATEGORY_DEFS.find((item) => item.id === categoryId);
 
@@ -1096,16 +1426,68 @@ function initCategoryFromUrl() {
     return false;
   }
 
+  if (mode === 'multi') {
+    if (!roomCode || !playerId) {
+      window.location.replace('./menu.html');
+      return false;
+    }
+    game.multiplayer.enabled = true;
+    game.multiplayer.roomCode = roomCode;
+    game.multiplayer.playerId = playerId;
+    game.multiplayer.initializing = true;
+  }
+
   game.selectedCategory = category;
   game.levels = COURSES[category.id];
   categoryEl.textContent = category.title;
-  restartButton.disabled = false;
-  nextButton.disabled = false;
+  restartButton.disabled = isMultiplayer();
+  nextButton.disabled = true;
 
   updateSettingsByDifficulty();
   setScore(0);
   setLives(0);
   loadLevel(0);
+
+  if (!isMultiplayer()) {
+    updateMultiplayerHud();
+    return true;
+  }
+
+  try {
+    const data = await fetchJson(`./api/room/state?room=${encodeURIComponent(roomCode)}&player=${encodeURIComponent(playerId)}`);
+    const room = data.room;
+
+    game.multiplayer.players = room.players || [];
+    game.multiplayer.turnPlayerId = room.turnPlayerId || playerId;
+    game.multiplayer.revision = room.revision || 0;
+
+    for (const player of game.multiplayer.players) {
+      getPlayerStats(player.id);
+    }
+
+    if (room.snapshot) {
+      applySnapshot(room.snapshot);
+    } else {
+      applyTurnStatsToGame();
+      await syncRoom({ passTurn: false, allowAnyPlayer: true });
+    }
+
+    updateMultiplayerHud();
+    startMultiplayerPolling();
+
+    if (!isMyTurn()) {
+      closeQuizModal();
+      setMessage('Ожидаем ход соперника...');
+    } else if (!game.shotUnlocked) {
+      openQuizModal('Твой ход. Реши задачу для удара.');
+    }
+  } catch (error) {
+    setMessage(`Ошибка комнаты: ${error.message}`);
+    return false;
+  } finally {
+    game.multiplayer.initializing = false;
+  }
+
   return true;
 }
 
@@ -1114,6 +1496,10 @@ newQuestionBtn.addEventListener('click', () => {
   initAudio();
 
   if (!game.selectedCategory) return;
+  if (isMultiplayer() && !isMyTurn()) {
+    setMessage('Сейчас ход соперника.');
+    return;
+  }
   adjustScore(-1 * game.selectedCategory.difficulty);
   playTone({ freq: 310, duration: 0.08, type: 'triangle', gain: 0.04 });
   openQuizModal('Новый вопрос.');
@@ -1136,6 +1522,12 @@ window.addEventListener('keydown', initAudio, { once: true });
 window.addEventListener('resize', updateCanvasViewport);
 window.addEventListener('orientationchange', updateCanvasViewport);
 
-updateCanvasViewport();
-initCategoryFromUrl();
-requestAnimationFrame(frame);
+async function initGame() {
+  updateCanvasViewport();
+  const ok = await initCategoryFromUrl();
+  if (ok) {
+    requestAnimationFrame(frame);
+  }
+}
+
+initGame();

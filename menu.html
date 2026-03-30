@@ -11,6 +11,15 @@
       <section class="menu-card">
         <h1 class="menu-title">Math Golf</h1>
         <p class="menu-subtitle">Выбери категорию. Каждая категория имеет свои более простые уровни.</p>
+        <div class="multiplayer-panel">
+          <label class="field-label" for="playerName">Имя игрока</label>
+          <input id="playerName" class="text-input" type="text" maxlength="24" placeholder="Игрок" />
+          <div class="join-row">
+            <input id="roomCode" class="text-input" type="text" maxlength="6" placeholder="Код комнаты" />
+            <button id="joinRoom" type="button">Войти 1v1</button>
+          </div>
+          <p id="menuStatus" class="menu-status">Для новой дуэли выбери категорию ниже.</p>
+        </div>
         <div id="menuGrid" class="menu-grid"></div>
       </section>
     </main>

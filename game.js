@@ -117,8 +117,10 @@ const game = {
     pollTimer: null,
     initializing: false,
     syncInFlight: false,
+    pollInFlight: false,
     lastLiveSyncAt: 0,
-    pendingSync: null
+    pendingSync: null,
+    lastNetworkErrorAt: 0
   },
   lastTime: performance.now()
 };
@@ -415,7 +417,9 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
 }
 
 async function pollRoomState() {
-  if (!isMultiplayer() || game.multiplayer.initializing) return;
+  if (!isMultiplayer() || game.multiplayer.initializing || game.multiplayer.pollInFlight) return;
+
+  game.multiplayer.pollInFlight = true;
 
   try {
     const previousTurnId = game.multiplayer.turnPlayerId;
@@ -456,7 +460,13 @@ async function pollRoomState() {
       setMessage('Твой ход. Реши задачу и сделай два удара.');
     }
   } catch (error) {
-    setMessage(`Сеть: ${error.message}`);
+    const now = performance.now();
+    if (now - game.multiplayer.lastNetworkErrorAt > 1800) {
+      setMessage(`Сеть: ${error.message}`);
+      game.multiplayer.lastNetworkErrorAt = now;
+    }
+  } finally {
+    game.multiplayer.pollInFlight = false;
   }
 }
 
@@ -1441,6 +1451,7 @@ async function initCategoryFromUrl() {
     game.multiplayer.roomCode = roomCode;
     game.multiplayer.playerId = playerId;
     game.multiplayer.initializing = true;
+    game.multiplayer.pollInFlight = false;
   }
 
   game.selectedCategory = category;
@@ -1509,6 +1520,7 @@ newQuestionBtn.addEventListener('click', () => {
   }
   adjustScore(-1 * game.selectedCategory.difficulty);
   playTone({ freq: 310, duration: 0.08, type: 'triangle', gain: 0.04 });
+  game.currentQuestion = null;
   openQuizModal('Новый вопрос.');
 });
 

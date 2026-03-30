@@ -1054,212 +1054,196 @@ function drawPaperBackground() {
     ctx.moveTo(0, y);
     ctx.lineTo(canvas.width, y + (y % 2 === 0 ? 1 : 0));
     ctx.stroke();
+  }
+}
 
-  function getTimeOfDay() {
-    const elapsed = (performance.now() - game.backgroundStartTime) / 1000;
-    const cycleDuration = 120; // 2 minutes for full day/night cycle
-    return (elapsed % cycleDuration) / cycleDuration; // 0-1
+function getTimeOfDay() {
+  const elapsed = (performance.now() - game.backgroundStartTime) / 1000;
+  const cycleDuration = 120;
+  return (elapsed % cycleDuration) / cycleDuration;
+}
+
+function drawLiveBackground() {
+  const t = getTimeOfDay();
+  const isDaytime = t < 0.5;
+  const phase = isDaytime ? t * 2 : (t - 0.5) * 2;
+
+  let topColor = '#8ec7f7';
+  let bottomColor = '#cdecb6';
+  if (isDaytime) {
+    topColor = `hsl(${200 - phase * 30}, ${70 - phase * 20}%, ${80 + phase * 10}%)`;
+    bottomColor = `hsl(${140 + phase * 20}, ${60 + phase * 10}%, ${85 + phase * 10}%)`;
+  } else {
+    topColor = `hsl(${260 - phase * 60}, ${50 + phase * 30}%, ${45 - phase * 35}%)`;
+    bottomColor = `hsl(${200 - phase * 80}, ${40 + phase * 20}%, ${50 - phase * 40}%)`;
   }
 
-  function drawLiveBackground() {
-    const t = getTimeOfDay();
-  
-    // Sky gradient based on time of day
-    const isDaytime = t < 0.5;
-    const cycleT = isDaytime ? t * 2 : (t - 0.5) * 2;
-  
-    let topColor, bottomColor;
-    if (isDaytime) {
-      // Morning -> Afternoon
-      topColor = `hsl(${200 - cycleT * 30}, ${70 - cycleT * 20}%, ${80 + cycleT * 10}%)`;
-      bottomColor = `hsl(${140 + cycleT * 20}, ${60 + cycleT * 10}%, ${85 + cycleT * 10}%)`;
-    } else {
-      // Evening -> Night
-      topColor = `hsl(${260 - cycleT * 60}, ${50 + cycleT * 30}%, ${45 - cycleT * 35}%)`;
-      bottomColor = `hsl(${200 - cycleT * 80}, ${40 + cycleT * 20}%, ${50 - cycleT * 40}%)`;
-    }
-  
-    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    gradient.addColorStop(0, topColor);
-    gradient.addColorStop(1, bottomColor);
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-    // Draw mountains
-    drawMountains(t);
-  
-    // Draw sun/moon
-    drawCelestialBodies(t);
-  
-    // Draw waterfalls
-    drawWaterfalls(t);
-  
-    // Draw birds
-    drawBirds(t);
-  
-    // Paper texture
-    ctx.fillStyle = '#fefcf4';
-    ctx.globalAlpha = 0.06;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.globalAlpha = 1;
-  }
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, topColor);
+  gradient.addColorStop(1, bottomColor);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  function drawMountains(t) {
-    const baseY = canvas.height * 0.65;
-  
-    ctx.fillStyle = '#4a5f3f';
+  drawMountains(t);
+  drawCelestialBodies(t);
+  drawWaterfalls(t);
+  drawBirds();
+
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  drawPaperBackground();
+  ctx.restore();
+}
+
+function drawMountains(t) {
+  const baseY = canvas.height * 0.65;
+
+  ctx.fillStyle = '#4a5f3f';
+  ctx.beginPath();
+  ctx.moveTo(-50, canvas.height);
+  ctx.quadraticCurveTo(canvas.width * 0.2, baseY - 80, canvas.width * 0.35, baseY);
+  ctx.lineTo(canvas.width, canvas.height);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#5a7a4f';
+  ctx.beginPath();
+  ctx.moveTo(canvas.width * 0.1, canvas.height);
+  ctx.quadraticCurveTo(canvas.width * 0.45, baseY - 120, canvas.width * 0.65, baseY + 20);
+  ctx.lineTo(canvas.width * 1.1, canvas.height);
+  ctx.closePath();
+  ctx.fill();
+
+  const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
+  if (sunX < canvas.width * 0.6) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
     ctx.beginPath();
-    ctx.moveTo(-50, canvas.height);
-    ctx.quadraticCurveTo(canvas.width * 0.2, baseY - 80, canvas.width * 0.35, baseY);
-    ctx.lineTo(canvas.width, canvas.height);
+    ctx.moveTo(canvas.width * 0.35, baseY);
+    ctx.quadraticCurveTo(canvas.width * 0.4, baseY - 40, canvas.width * 0.5, baseY + 30);
+    ctx.lineTo(canvas.width * 0.5, baseY);
     ctx.closePath();
     ctx.fill();
-  
-    ctx.fillStyle = '#5a7a4f';
+  }
+}
+
+function drawCelestialBodies(t) {
+  const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
+  const sunY = Math.cos((t - 0.25) * Math.PI * 2) * canvas.height * 0.2 + canvas.height * 0.25;
+
+  if (t < 0.5) {
+    const radius = 34;
+    const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, radius * 1.5);
+    glow.addColorStop(0, 'rgba(255, 200, 80, 0.4)');
+    glow.addColorStop(1, 'rgba(255, 150, 0, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(sunX - radius * 1.5, sunY - radius * 1.5, radius * 3, radius * 3);
+
+    ctx.fillStyle = '#ffdd55';
     ctx.beginPath();
-    ctx.moveTo(canvas.width * 0.1, canvas.height);
-    ctx.quadraticCurveTo(canvas.width * 0.45, baseY - 120, canvas.width * 0.65, baseY + 20);
-    ctx.lineTo(canvas.width * 1.1, canvas.height);
-    ctx.closePath();
+    ctx.arc(sunX, sunY, radius, 0, Math.PI * 2);
     ctx.fill();
-  
-    // Mountain shadows/highlights based on sun position
-    const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
-    if (sunX < canvas.width * 0.6) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-      ctx.beginPath();
-      ctx.moveTo(canvas.width * 0.35, baseY);
-      ctx.quadraticCurveTo(canvas.width * 0.4, baseY - 40, canvas.width * 0.5, baseY + 30);
-      ctx.lineTo(canvas.width * 0.5, baseY);
-      ctx.closePath();
-      ctx.fill();
-    }
+    return;
   }
 
-  function drawCelestialBodies(t) {
-    const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
-    const sunY = Math.cos((t - 0.25) * Math.PI * 2) * canvas.height * 0.2 + canvas.height * 0.25;
-  
-    if (t < 0.5) {
-      // Sun in daytime
-      const radius = 34;
-      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, radius * 1.5);
-      glow.addColorStop(0, 'rgba(255, 200, 80, 0.4)');
-      glow.addColorStop(1, 'rgba(255, 150, 0, 0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(sunX - radius * 1.5, sunY - radius * 1.5, radius * 3, radius * 3);
-    
-      ctx.fillStyle = '#ffdd55';
+  const moonX = canvas.width * 0.2;
+  const moonY = canvas.height * 0.15;
+  const moonRadius = 28;
+
+  const glow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, moonRadius * 2);
+  glow.addColorStop(0, 'rgba(200, 220, 255, 0.3)');
+  glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(moonX - moonRadius * 2, moonY - moonRadius * 2, moonRadius * 4, moonRadius * 4);
+
+  ctx.fillStyle = '#e8e8ff';
+  ctx.beginPath();
+  ctx.arc(moonX, moonY, moonRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(100, 100, 150, 0.4)';
+  ctx.beginPath();
+  ctx.arc(moonX - 6, moonY - 5, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(moonX + 8, moonY + 3, 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawWaterfalls(t) {
+  const waterfalls = [
+    { x: canvas.width * 0.25, width: 8 },
+    { x: canvas.width * 0.75, width: 6 }
+  ];
+
+  for (const fall of waterfalls) {
+    ctx.strokeStyle = 'rgba(100, 200, 255, 0.6)';
+    ctx.lineWidth = fall.width;
+    ctx.lineCap = 'round';
+
+    for (let i = 0; i < 5; i++) {
+      const phase = ((t * 3) + i * 0.2) % 1;
+      const startY = canvas.height * (0.4 + phase * 0.3);
+      const endY = canvas.height * 0.7;
+
       ctx.beginPath();
-      ctx.arc(sunX, sunY, radius, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      // Moon in nighttime
-      const moonX = canvas.width * 0.2;
-      const moonY = canvas.height * 0.15;
-      const moonRadius = 28;
-    
-      const glow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, moonRadius * 2);
-      glow.addColorStop(0, 'rgba(200, 220, 255, 0.3)');
-      glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(moonX - moonRadius * 2, moonY - moonRadius * 2, moonRadius * 4, moonRadius * 4);
-    
-      ctx.fillStyle = '#e8e8ff';
-      ctx.beginPath();
-      ctx.arc(moonX, moonY, moonRadius, 0, Math.PI * 2);
-      ctx.fill();
-    
-      // Moon craters
-      ctx.fillStyle = 'rgba(100, 100, 150, 0.4)';
-      ctx.beginPath();
-      ctx.arc(moonX - 6, moonY - 5, 3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(moonX + 8, moonY + 3, 2, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(fall.x, startY);
+      ctx.bezierCurveTo(
+        fall.x + Math.sin(phase * Math.PI * 4) * 10,
+        startY + (endY - startY) * 0.5,
+        fall.x - Math.sin(phase * Math.PI * 4 + 1) * 8,
+        endY,
+        fall.x,
+        endY
+      );
+      ctx.stroke();
     }
+
+    ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
+    ctx.beginPath();
+    ctx.ellipse(fall.x, canvas.height * 0.7 + 15, fall.width * 1.5, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function initBirds() {
+  game.birds = [];
+  for (let i = 0; i < 4; i += 1) {
+    game.birds.push({
+      x: Math.random() * (canvas.width + 300) - 150,
+      y: Math.random() * canvas.height * 0.3 + 20,
+      speed: 30 + Math.random() * 40,
+      size: 0.6 + Math.random() * 0.5
+    });
+  }
+}
+
+function drawBirds() {
+  if (game.birds.length === 0) initBirds();
+
+  const elapsedSec = (performance.now() - game.backgroundStartTime) / 1000;
+  const isDaytime = getTimeOfDay() < 0.5;
+  ctx.save();
+  ctx.globalAlpha = isDaytime ? 0.6 : 0.28;
+  ctx.fillStyle = isDaytime ? '#2d2d2d' : '#555';
+
+  for (const bird of game.birds) {
+    const flightX = ((bird.x + bird.speed * elapsedSec) % (canvas.width + 240)) - 120;
+    const flightY = bird.y + Math.sin(elapsedSec * 2.2 + bird.x * 0.01) * 16;
+
+    ctx.save();
+    ctx.translate(flightX, flightY);
+    ctx.scale(bird.size, bird.size);
+    ctx.beginPath();
+    ctx.moveTo(-8, 0);
+    ctx.quadraticCurveTo(-4, -3, 0, -2);
+    ctx.quadraticCurveTo(4, -3, 8, 0);
+    ctx.quadraticCurveTo(4, 1, 0, 0);
+    ctx.quadraticCurveTo(-4, 1, -8, 0);
+    ctx.fill();
+    ctx.restore();
   }
 
-  function drawWaterfalls(t) {
-    const waterfalls = [
-      { x: canvas.width * 0.25, width: 8 },
-      { x: canvas.width * 0.75, width: 6 }
-    ];
-  
-    for (const fall of waterfalls) {
-      ctx.strokeStyle = 'rgba(100, 200, 255, 0.6)';
-      ctx.lineWidth = fall.width;
-      ctx.lineCap = 'round';
-    
-      for (let i = 0; i < 5; i++) {
-        const phase = ((t * 3) + i * 0.2) % 1;
-        const startY = canvas.height * (0.4 + phase * 0.3);
-        const endY = canvas.height * 0.7;
-      
-        ctx.beginPath();
-        ctx.moveTo(fall.x, startY);
-        ctx.bezierCurveTo(
-          fall.x + Math.sin(phase * Math.PI * 4) * 10,
-          startY + (endY - startY) * 0.5,
-          fall.x - Math.sin(phase * Math.PI * 4 + 1) * 8,
-          endY,
-          fall.x,
-          endY
-        );
-        ctx.stroke();
-      }
-    
-      // Splash effect
-      ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
-      ctx.beginPath();
-      ctx.ellipse(fall.x, canvas.height * 0.7 + 15, fall.width * 1.5, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  function initBirds() {
-    game.birds = [];
-    for (let i = 0; i < 3; i++) {
-      game.birds.push({
-        x: Math.random() * canvas.width * 1.5,
-        y: Math.random() * canvas.height * 0.3 + 20,
-        speed: 40 + Math.random() * 60,
-        size: 0.6 + Math.random() * 0.6
-      });
-    }
-  }
-
-  function drawBirds(t) {
-    if (game.birds.length === 0) initBirds();
-  
-    const isDaytime = getTimeOfDay() < 0.5;
-    ctx.globalAlpha = isDaytime ? 0.6 : 0.3;
-    ctx.fillStyle = isDaytime ? '#333' : '#555';
-  
-    for (const bird of game.birds) {
-      const flightX = ((bird.x + bird.speed * t * 10) % (canvas.width * 1.8)) - canvas.width * 0.4;
-      const flightY = bird.y + Math.sin(t * 8 + bird.x * 0.01) * 30;
-    
-      // Draw simple bird shape
-      ctx.save();
-      ctx.translate(flightX, flightY);
-      ctx.scale(bird.size, bird.size);
-    
-      ctx.beginPath();
-      ctx.moveTo(-8, 0);
-      ctx.quadraticCurveTo(-4, -3, 0, -2);
-      ctx.quadraticCurveTo(4, -3, 8, 0);
-      ctx.quadraticCurveTo(4, 1, 0, 0);
-      ctx.quadraticCurveTo(-4, 1, -8, 0);
-      ctx.fill();
-    
-      ctx.restore();
-    }
-  
-    ctx.globalAlpha = 1;
-  }
-  }
+  ctx.restore();
 }
 
 function drawRoundedRect(rect, fill, stroke, radius = 10, lineWidth = 2.2) {

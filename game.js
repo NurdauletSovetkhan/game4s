@@ -456,7 +456,6 @@ function serializeSnapshot() {
     ball: { ...game.ball },
     checkpoint: { ...game.checkpoint },
     start: { ...game.start },
-    turnPlayerId: game.multiplayer.turnPlayerId,
     statsByPlayer: game.multiplayer.statsByPlayer
   };
 }
@@ -485,7 +484,7 @@ function applySnapshot(snapshot) {
     game.won = snapshot.won;
   }
 
-  if (typeof snapshot.shotUnlocked === 'boolean') {
+  if (typeof snapshot.shotUnlocked === 'boolean' && !isMyTurn()) {
     game.shotUnlocked = snapshot.shotUnlocked;
   }
 
@@ -507,10 +506,6 @@ function applySnapshot(snapshot) {
 
   if (snapshot.start) {
     game.start = { ...snapshot.start };
-  }
-
-  if (snapshot.turnPlayerId) {
-    game.multiplayer.turnPlayerId = snapshot.turnPlayerId;
   }
 
   if (snapshot.statsByPlayer && typeof snapshot.statsByPlayer === 'object') {
@@ -578,6 +573,7 @@ async function pollRoomState() {
   if (!isMultiplayer() || game.multiplayer.initializing) return;
 
   try {
+    const previousTurnId = game.multiplayer.turnPlayerId;
     const data = await fetchJson(
       `./api/room/state?room=${encodeURIComponent(game.multiplayer.roomCode)}&player=${encodeURIComponent(game.multiplayer.playerId)}`
     );
@@ -589,7 +585,11 @@ async function pollRoomState() {
       game.multiplayer.turnPlayerId = room.turnPlayerId;
     }
 
-    if (room.snapshot) {
+    const becameMyTurn =
+      previousTurnId !== game.multiplayer.playerId && room.turnPlayerId === game.multiplayer.playerId;
+    const shouldApplySnapshot = Boolean(room.snapshot) && (!isMyTurn() || becameMyTurn);
+
+    if (shouldApplySnapshot) {
       applySnapshot(room.snapshot);
     } else {
       updateMultiplayerHud();
@@ -761,6 +761,12 @@ function onCorrectAnswer() {
   closeQuizModal();
   playCorrectSound();
   setMessage(`Верно! Удар открыт (+${reward} очков, +2 жизни).`);
+
+  if (isMultiplayer()) {
+    syncRoom({ passTurn: false, allowAnyPlayer: false }).catch((error) => {
+      setMessage(`Сеть: ${error.message}`);
+    });
+  }
 }
 
 function handleAnswerSubmit() {
@@ -790,6 +796,12 @@ function handleAnswerSubmit() {
   adjustScore(-2 * game.selectedCategory.difficulty);
   playWrongSound();
   setMessage('Неверно. Попробуй снова.');
+
+  if (isMultiplayer()) {
+    syncRoom({ passTurn: false, allowAnyPlayer: false }).catch((error) => {
+      setMessage(`Сеть: ${error.message}`);
+    });
+  }
 }
 
 function alignCameraToBall() {

@@ -36,7 +36,7 @@ const STOP_SPEED = 32;
 const ROLL_DAMPING = 0.985;
 const AIR_DAMPING = 0.999;
 const SPIKE_STEP = 28;
-const MULTI_POLL_MS = 250;
+const MULTI_POLL_MS = 1;
 const MULTI_LIVE_SYNC_MS = 90;
 
 function updateCanvasViewport() {
@@ -397,7 +397,11 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
         const turn = currentTurnPlayer();
         setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
       } else if (!game.shotUnlocked && ballSpeed() <= STOP_SPEED) {
-        openQuizModal('Твой ход. Реши задачу для удара.');
+        if (quizModalEl.hidden) {
+          openQuizModal('Твой ход. Реши задачу для удара.');
+        } else {
+          setMessage('Твой ход. Реши задачу для удара.');
+        }
       }
     }
   } finally {
@@ -597,6 +601,11 @@ function openQuizModal(reasonText) {
     closeQuizModal();
     game.shotUnlocked = true;
     setMessage(`Твой ход: осталось ${game.shotsRemaining} удар(а).`);
+    return;
+  }
+
+  if (game.currentQuestion && !quizModalEl.hidden && !game.shotUnlocked) {
+    setMessage(reasonText);
     return;
   }
 

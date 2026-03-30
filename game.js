@@ -37,6 +37,7 @@ const ROLL_DAMPING = 0.985;
 const AIR_DAMPING = 0.999;
 const SPIKE_STEP = 28;
 const MULTI_POLL_MS = 1100;
+const MULTI_LIVE_SYNC_MS = 180;
 
 function updateCanvasViewport() {
   const isPhone = window.innerWidth <= 768;
@@ -338,6 +339,7 @@ const game = {
   pointerId: null,
   dragPos: null,
   justStopped: false,
+  shotsRemaining: 0,
   currentQuestion: null,
   settings: {
     gravity: 1150,
@@ -357,9 +359,12 @@ const game = {
     players: [],
     turnPlayerId: '',
     statsByPlayer: {},
+    stateByPlayer: {},
     revision: 0,
     pollTimer: null,
-    initializing: false
+    initializing: false,
+    syncInFlight: false,
+    lastLiveSyncAt: 0
   },
   lastTime: performance.now()
 };
@@ -404,6 +409,60 @@ function getPlayerStats(playerId) {
   return game.multiplayer.statsByPlayer[playerId];
 }
 
+function createTurnState() {
+  return {
+    ball: { x: game.start.x || 0, y: game.start.y || 0, r: game.ball.r, vx: 0, vy: 0, grounded: false },
+    checkpoint: { x: game.start.x || 0, y: game.start.y || 0 },
+    shotUnlocked: false,
+    shotsRemaining: 0,
+    justStopped: false
+  };
+}
+
+function getTurnState(playerId) {
+  if (!playerId) return createTurnState();
+  if (!game.multiplayer.stateByPlayer[playerId]) {
+    game.multiplayer.stateByPlayer[playerId] = createTurnState();
+  }
+  return game.multiplayer.stateByPlayer[playerId];
+}
+
+function saveActiveTurnState() {
+  if (!isMultiplayer()) return;
+  const turnId = game.multiplayer.turnPlayerId;
+  if (!turnId) return;
+  const state = getTurnState(turnId);
+  state.ball = { ...game.ball };
+  state.checkpoint = { ...game.checkpoint };
+  state.shotUnlocked = Boolean(game.shotUnlocked);
+  state.shotsRemaining = Math.max(0, Math.round(game.shotsRemaining || 0));
+  state.justStopped = Boolean(game.justStopped);
+}
+
+function loadTurnState(playerId) {
+  if (!isMultiplayer()) return;
+  const state = getTurnState(playerId);
+  game.ball.x = state.ball.x;
+  game.ball.y = state.ball.y;
+  game.ball.vx = state.ball.vx;
+  game.ball.vy = state.ball.vy;
+  game.ball.grounded = Boolean(state.ball.grounded);
+  game.checkpoint = { ...state.checkpoint };
+  game.shotUnlocked = Boolean(state.shotUnlocked);
+  game.shotsRemaining = Math.max(0, Math.round(state.shotsRemaining || 0));
+  game.justStopped = Boolean(state.justStopped);
+  alignCameraToBall();
+}
+
+function getPlayerColor(playerId) {
+  if (!isMultiplayer()) return '#ffffff';
+  if (!playerId) return '#ffffff';
+  const index = game.multiplayer.players.findIndex((player) => player.id === playerId);
+  if (index === 0) return '#fce56a';
+  if (index === 1) return '#6ac7ff';
+  return '#ffffff';
+}
+
 function refreshScoreHud() {
   if (!isMultiplayer()) {
     scoreEl.textContent = String(game.score);
@@ -443,6 +502,7 @@ function updateMultiplayerHud() {
 
 function serializeSnapshot() {
   if (!isMultiplayer()) return null;
+  saveActiveTurnState();
   return {
     levelIndex: game.levelIndex,
     currentPar: game.currentPar,
@@ -452,11 +512,11 @@ function serializeSnapshot() {
     won: game.won,
     dragging: false,
     shotUnlocked: game.shotUnlocked,
+    shotsRemaining: game.shotsRemaining,
     justStopped: game.justStopped,
-    ball: { ...game.ball },
-    checkpoint: { ...game.checkpoint },
     start: { ...game.start },
-    statsByPlayer: game.multiplayer.statsByPlayer
+    statsByPlayer: game.multiplayer.statsByPlayer,
+    stateByPlayer: game.multiplayer.stateByPlayer
   };
 }
 
@@ -484,32 +544,20 @@ function applySnapshot(snapshot) {
     game.won = snapshot.won;
   }
 
-  if (typeof snapshot.shotUnlocked === 'boolean' && !isMyTurn()) {
-    game.shotUnlocked = snapshot.shotUnlocked;
-  }
-
-  if (typeof snapshot.justStopped === 'boolean') {
-    game.justStopped = snapshot.justStopped;
-  }
-
-  if (snapshot.ball) {
-    game.ball.x = snapshot.ball.x;
-    game.ball.y = snapshot.ball.y;
-    game.ball.vx = snapshot.ball.vx;
-    game.ball.vy = snapshot.ball.vy;
-    game.ball.grounded = Boolean(snapshot.ball.grounded);
-  }
-
-  if (snapshot.checkpoint) {
-    game.checkpoint = { ...snapshot.checkpoint };
-  }
-
   if (snapshot.start) {
     game.start = { ...snapshot.start };
   }
 
   if (snapshot.statsByPlayer && typeof snapshot.statsByPlayer === 'object') {
     game.multiplayer.statsByPlayer = snapshot.statsByPlayer;
+  }
+
+  if (snapshot.stateByPlayer && typeof snapshot.stateByPlayer === 'object') {
+    game.multiplayer.stateByPlayer = snapshot.stateByPlayer;
+  }
+
+  if (isMultiplayer() && game.multiplayer.turnPlayerId) {
+    loadTurnState(game.multiplayer.turnPlayerId);
   }
 
   applyTurnStatsToGame();
@@ -533,13 +581,22 @@ async function fetchJson(url, options) {
 function setTurnPlayer(turnPlayerId) {
   if (!isMultiplayer()) return;
   if (!turnPlayerId) return;
+
+  if (game.multiplayer.turnPlayerId && game.multiplayer.turnPlayerId !== turnPlayerId) {
+    saveActiveTurnState();
+  }
+
   game.multiplayer.turnPlayerId = turnPlayerId;
+  loadTurnState(turnPlayerId);
   applyTurnStatsToGame();
   updateMultiplayerHud();
 }
 
-async function syncRoom({ passTurn = false, allowAnyPlayer = false } = {}) {
+async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = false } = {}) {
   if (!isMultiplayer()) return;
+  if (game.multiplayer.syncInFlight) return;
+
+  game.multiplayer.syncInFlight = true;
 
   const payload = {
     roomCode: game.multiplayer.roomCode,
@@ -549,23 +606,29 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false } = {}) {
     snapshot: serializeSnapshot()
   };
 
-  const data = await fetchJson('./api/room/update', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  try {
+    const data = await fetchJson('./api/room/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  game.multiplayer.revision = data.room.revision || game.multiplayer.revision;
-  game.multiplayer.players = data.room.players || game.multiplayer.players;
-  setTurnPlayer(data.room.turnPlayerId || game.multiplayer.turnPlayerId);
-  updateMultiplayerHud();
+    game.multiplayer.revision = data.room.revision || game.multiplayer.revision;
+    game.multiplayer.players = data.room.players || game.multiplayer.players;
+    setTurnPlayer(data.room.turnPlayerId || game.multiplayer.turnPlayerId);
+    updateMultiplayerHud();
 
-  if (!isMyTurn()) {
-    closeQuizModal();
-    const turn = currentTurnPlayer();
-    setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
-  } else if (!game.shotUnlocked) {
-    openQuizModal('Твой ход. Реши задачу для удара.');
+    if (!silent) {
+      if (!isMyTurn()) {
+        closeQuizModal();
+        const turn = currentTurnPlayer();
+        setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
+      } else if (!game.shotUnlocked && ballSpeed() <= STOP_SPEED) {
+        openQuizModal('Твой ход. Реши задачу для удара.');
+      }
+    }
+  } finally {
+    game.multiplayer.syncInFlight = false;
   }
 }
 
@@ -600,8 +663,15 @@ async function pollRoomState() {
       closeQuizModal();
       const turn = currentTurnPlayer();
       setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
+    } else if (becameMyTurn) {
+      if (game.shotsRemaining > 0) {
+        game.shotUnlocked = true;
+        setMessage(`Твой ход. Осталось ударов: ${game.shotsRemaining}.`);
+      } else {
+        openQuizModal('Твой ход. Реши задачу и сделай два удара.');
+      }
     } else if (!game.shotUnlocked && !quizModalEl.hidden) {
-      setMessage('Твой ход. Реши задачу и сделай удар.');
+      setMessage('Твой ход. Реши задачу и сделай два удара.');
     }
   } catch (error) {
     setMessage(`Сеть: ${error.message}`);
@@ -620,10 +690,22 @@ function endTurnAndSync(reasonText) {
   if (!isMultiplayer()) return;
   closeQuizModal();
   game.shotUnlocked = false;
+  game.shotsRemaining = 0;
+  saveActiveTurnState();
   setMessage(reasonText);
   syncRoom({ passTurn: true }).catch((error) => {
     setMessage(`Сеть: ${error.message}`);
   });
+}
+
+function maybeSyncLive(nowMs) {
+  if (!isMultiplayer() || !isMyTurn()) return;
+  if (ballSpeed() <= STOP_SPEED) return;
+  if (nowMs - game.multiplayer.lastLiveSyncAt < MULTI_LIVE_SYNC_MS) return;
+
+  game.multiplayer.lastLiveSyncAt = nowMs;
+  saveActiveTurnState();
+  syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
 }
 
 function setScore(value) {
@@ -732,6 +814,13 @@ function openQuizModal(reasonText) {
     return;
   }
 
+  if (isMultiplayer() && game.shotsRemaining > 0) {
+    closeQuizModal();
+    game.shotUnlocked = true;
+    setMessage(`Твой ход: осталось ${game.shotsRemaining} удар(а).`);
+    return;
+  }
+
   game.shotUnlocked = false;
   game.currentQuestion = createQuestion();
 
@@ -758,12 +847,16 @@ function onCorrectAnswer() {
   adjustScore(reward);
   addLives(2);
   game.shotUnlocked = true;
+  if (isMultiplayer()) {
+    game.shotsRemaining = 2;
+  }
   closeQuizModal();
   playCorrectSound();
-  setMessage(`Верно! Удар открыт (+${reward} очков, +2 жизни).`);
+  setMessage(`Верно! Удар открыт (+${reward} очков, +2 жизни). Осталось ударов: ${game.shotsRemaining || 1}.`);
 
   if (isMultiplayer()) {
-    syncRoom({ passTurn: false, allowAnyPlayer: false }).catch((error) => {
+    saveActiveTurnState();
+    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch((error) => {
       setMessage(`Сеть: ${error.message}`);
     });
   }
@@ -798,7 +891,8 @@ function handleAnswerSubmit() {
   setMessage('Неверно. Попробуй снова.');
 
   if (isMultiplayer()) {
-    syncRoom({ passTurn: false, allowAnyPlayer: false }).catch((error) => {
+    saveActiveTurnState();
+    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch((error) => {
       setMessage(`Сеть: ${error.message}`);
     });
   }
@@ -841,7 +935,27 @@ function loadLevel(index) {
   game.start = { ...level.start };
   game.checkpoint = { ...level.start };
 
-  resetBallToCheckpoint();
+  if (isMultiplayer()) {
+    for (const player of game.multiplayer.players) {
+      game.multiplayer.stateByPlayer[player.id] = {
+        ball: { x: level.start.x, y: level.start.y, r: game.ball.r, vx: 0, vy: 0, grounded: false },
+        checkpoint: { x: level.start.x, y: level.start.y },
+        shotUnlocked: false,
+        shotsRemaining: 0,
+        justStopped: false
+      };
+    }
+
+    if (game.multiplayer.turnPlayerId) {
+      loadTurnState(game.multiplayer.turnPlayerId);
+    } else {
+      resetBallToCheckpoint();
+    }
+  } else {
+    resetBallToCheckpoint();
+  }
+
+  game.shotsRemaining = 0;
 
   game.currentPar = Math.max(3, level.par + (game.selectedCategory.difficulty >= 5 ? -1 : 0));
 
@@ -857,11 +971,16 @@ function handleHazardDeath(textWithLife, textNoLife) {
   if (game.lives > 0) {
     addLives(-1);
     resetBallToCheckpoint();
-    game.shotUnlocked = !isMultiplayer();
+    game.shotUnlocked = isMultiplayer() ? game.shotsRemaining > 0 : true;
     playHazardSound();
     setMessage(`${textWithLife} Осталось жизней: ${game.lives}.`);
     if (isMultiplayer()) {
-      endTurnAndSync('Ход завершён после препятствия.');
+      saveActiveTurnState();
+      if (game.shotsRemaining > 0) {
+        syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
+      } else {
+        endTurnAndSync('Ход завершён после препятствия.');
+      }
     }
     return;
   }
@@ -1076,7 +1195,14 @@ function update(dt) {
     if (!game.justStopped) {
       playCheckpointSound();
       if (isMultiplayer()) {
-        endTurnAndSync('Чекпоинт сохранён. Ход передан сопернику.');
+        saveActiveTurnState();
+        if (game.shotsRemaining > 0) {
+          game.shotUnlocked = true;
+          setMessage(`Чекпоинт сохранён. Осталось ударов: ${game.shotsRemaining}.`);
+          syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
+        } else {
+          endTurnAndSync('Чекпоинт сохранён. Ход передан сопернику.');
+        }
       } else {
         openQuizModal('Чекпоинт сохранён. Реши новую задачу для следующего удара.');
       }
@@ -1318,21 +1444,47 @@ function drawClub() {
   ctx.restore();
 }
 
-function drawBall() {
-  const b = game.ball;
-  const sx = worldToScreenX(b.x);
-  const sy = worldToScreenY(b.y);
+function drawBallAt(ball, fill, stroke = '#1f1f1f', ring = false) {
+  const sx = worldToScreenX(ball.x);
+  const sy = worldToScreenY(ball.y);
 
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.arc(sx, sy, b.r, 0, Math.PI * 2);
+  ctx.arc(sx, sy, ball.r, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = '#1f1f1f';
+  ctx.strokeStyle = stroke;
   ctx.lineWidth = 1.6;
   ctx.beginPath();
-  ctx.arc(sx, sy, b.r, 0, Math.PI * 2);
+  ctx.arc(sx, sy, ball.r, 0, Math.PI * 2);
   ctx.stroke();
+
+  if (ring) {
+    ctx.strokeStyle = '#232323';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, ball.r + 4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function drawBall() {
+  if (!isMultiplayer()) {
+    drawBallAt(game.ball, '#ffffff');
+    return;
+  }
+
+  for (const player of game.multiplayer.players) {
+    const isTurn = player.id === game.multiplayer.turnPlayerId;
+    if (isTurn) {
+      drawBallAt(game.ball, getPlayerColor(player.id), '#1f1f1f', true);
+      const state = getTurnState(player.id);
+      state.ball = { ...game.ball };
+    } else {
+      const state = getTurnState(player.id);
+      drawBallAt(state.ball, getPlayerColor(player.id), '#1f1f1f', false);
+    }
+  }
 }
 
 function frame(now) {
@@ -1347,6 +1499,10 @@ function frame(now) {
   drawAimGuide();
   drawClub();
   drawBall();
+
+  if (isMultiplayer() && isMyTurn()) {
+    maybeSyncLive(now);
+  }
 
   requestAnimationFrame(frame);
 }
@@ -1399,11 +1555,20 @@ function endDrag(ev) {
   game.ball.grounded = false;
   game.justStopped = false;
   game.shotUnlocked = false;
+  if (isMultiplayer()) {
+    game.shotsRemaining = Math.max(0, game.shotsRemaining - 1);
+  }
 
   game.strokes += 1;
   strokesEl.textContent = String(game.strokes);
   playShotSound(power);
-  setMessage('Удар!');
+  if (isMultiplayer()) {
+    setMessage(`Удар! Осталось попыток в ходе: ${game.shotsRemaining}.`);
+    saveActiveTurnState();
+    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
+  } else {
+    setMessage('Удар!');
+  }
 }
 
 function restartHole() {
@@ -1475,6 +1640,7 @@ async function initCategoryFromUrl() {
 
     for (const player of game.multiplayer.players) {
       getPlayerStats(player.id);
+      getTurnState(player.id);
     }
 
     if (room.snapshot) {

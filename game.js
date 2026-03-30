@@ -1145,8 +1145,9 @@ function drawCelestialBodies(t) {
     return;
   }
 
-  const moonX = canvas.width * 0.2;
-  const moonY = canvas.height * 0.15;
+  const moonPhase = (t - 0.5) * 2;
+  const moonX = Math.sin((moonPhase - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
+  const moonY = Math.cos((moonPhase - 0.25) * Math.PI * 2) * canvas.height * 0.2 + canvas.height * 0.25;
   const moonRadius = 28;
 
   const glow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, moonRadius * 2);

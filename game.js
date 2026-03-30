@@ -33,7 +33,7 @@ const TABLET_LANDSCAPE_VIEW = { width: 1320, height: 900 };
 const MAX_DRAG = 190;
 const MIN_DRAG_TO_SHOT = 10;
 const STOP_SPEED = 32;
-const ROLL_DAMPING = 0.985;
+const ROLL_DAMPING = 0.96;  // more friction = shorter rolls
 const AIR_DAMPING = 0.999;
 const SPIKE_STEP = 28;
 const MULTI_POLL_MS = 1;
@@ -96,7 +96,7 @@ const game = {
   currentQuestion: null,
   settings: {
     gravity: 1150,
-    shotSpeed: 1380,
+    shotSpeed: 1050,  // lower speed = easier to control
     restitution: 0.58,
     spikeHeight: 24,
     waterScale: 0.75
@@ -601,7 +601,7 @@ function getDragVector() {
 function updateSettingsByDifficulty() {
   const d = game.selectedCategory.difficulty;
   game.settings.gravity = 960 + d * 85;
-  game.settings.shotSpeed = 1480 - d * 55;
+  game.settings.shotSpeed = 1150 - d * 45;  // easier difficulty = slower shots
   game.settings.restitution = clamp(0.66 - d * 0.035, 0.42, 0.66);
   game.settings.spikeHeight = 20 + d * 3;
   game.settings.waterScale = 0.72 + d * 0.05;

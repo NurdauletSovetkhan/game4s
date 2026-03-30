@@ -116,7 +116,8 @@ const game = {
     pollTimer: null,
     initializing: false,
     syncInFlight: false,
-    lastLiveSyncAt: 0
+    lastLiveSyncAt: 0,
+    pendingSync: null
   },
   lastTime: performance.now()
 };
@@ -346,17 +347,31 @@ function setTurnPlayer(turnPlayerId) {
   updateMultiplayerHud();
 }
 
+function mergeSyncOptions(previous, next) {
+  if (!previous) return { ...next };
+  return {
+    passTurn: Boolean(previous.passTurn || next.passTurn),
+    allowAnyPlayer: Boolean(previous.allowAnyPlayer || next.allowAnyPlayer),
+    silent: Boolean(previous.silent && next.silent)
+  };
+}
+
 async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = false } = {}) {
   if (!isMultiplayer()) return;
-  if (game.multiplayer.syncInFlight) return;
+  const options = { passTurn, allowAnyPlayer, silent };
+
+  if (game.multiplayer.syncInFlight) {
+    game.multiplayer.pendingSync = mergeSyncOptions(game.multiplayer.pendingSync, options);
+    return;
+  }
 
   game.multiplayer.syncInFlight = true;
 
   const payload = {
     roomCode: game.multiplayer.roomCode,
     playerId: game.multiplayer.playerId,
-    passTurn,
-    allowAnyPlayer,
+    passTurn: options.passTurn,
+    allowAnyPlayer: options.allowAnyPlayer,
     snapshot: serializeSnapshot()
   };
 
@@ -372,7 +387,7 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
     setTurnPlayer(data.room.turnPlayerId || game.multiplayer.turnPlayerId);
     updateMultiplayerHud();
 
-    if (!silent) {
+    if (!options.silent) {
       if (!isMyTurn()) {
         closeQuizModal();
         const turn = currentTurnPlayer();
@@ -383,6 +398,11 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
     }
   } finally {
     game.multiplayer.syncInFlight = false;
+    const pending = game.multiplayer.pendingSync;
+    game.multiplayer.pendingSync = null;
+    if (pending) {
+      syncRoom(pending).catch(() => {});
+    }
   }
 }
 
@@ -446,8 +466,9 @@ function endTurnAndSync(reasonText) {
   game.shotUnlocked = false;
   game.shotsRemaining = 0;
   saveActiveTurnState();
+  game.multiplayer.pendingSync = null;
   setMessage(reasonText);
-  syncRoom({ passTurn: true }).catch((error) => {
+  syncRoom({ passTurn: true, silent: false }).catch((error) => {
     setMessage(`Сеть: ${error.message}`);
   });
 }

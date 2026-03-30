@@ -170,11 +170,13 @@ function getPlayerStats(playerId) {
 function createTurnState() {
   return {
     ball: { x: game.start.x || 0, y: game.start.y || 0, r: game.ball.r, vx: 0, vy: 0, grounded: false },
+    prevBall: { x: game.start.x || 0, y: game.start.y || 0, r: game.ball.r, vx: 0, vy: 0, grounded: false },
     checkpoint: { x: game.start.x || 0, y: game.start.y || 0 },
     shotUnlocked: false,
     shotsRemaining: 0,
     justStopped: false,
-    awaitingStopResolution: false
+    awaitingStopResolution: false,
+    lastSyncTime: 0
   };
 }
 
@@ -313,7 +315,16 @@ function applySnapshot(snapshot) {
     game.multiplayer.statsByPlayer = snapshot.statsByPlayer;
   }
 
+  const now = performance.now();
   if (snapshot.stateByPlayer && typeof snapshot.stateByPlayer === 'object') {
+    for (const playerId in snapshot.stateByPlayer) {
+      const newState = snapshot.stateByPlayer[playerId];
+      const oldState = game.multiplayer.stateByPlayer[playerId];
+      if (oldState && oldState.ball) {
+        newState.prevBall = { ...oldState.ball };
+      }
+      newState.lastSyncTime = now;
+    }
     game.multiplayer.stateByPlayer = snapshot.stateByPlayer;
   }
 
@@ -1306,6 +1317,23 @@ function drawBallAt(ball, fill, stroke = '#1f1f1f', ring = false) {
   }
 }
 
+function getInterpolatedBallPosition(state) {
+  if (!state || !state.lastSyncTime || !state.prevBall) return state.ball;
+  const now = performance.now();
+  const timeSinceSync = now - state.lastSyncTime;
+  const progress = Math.min(1, timeSinceSync / MULTI_LIVE_SYNC_MS);
+  const prev = state.prevBall;
+  const curr = state.ball;
+  return {
+    x: prev.x + (curr.x - prev.x) * progress,
+    y: prev.y + (curr.y - prev.y) * progress,
+    r: curr.r,
+    vx: curr.vx,
+    vy: curr.vy,
+    grounded: curr.grounded
+  };
+}
+
 function drawBall() {
   if (!isMultiplayer()) {
     drawBallAt(game.ball, '#ffffff');
@@ -1320,7 +1348,8 @@ function drawBall() {
       state.ball = { ...game.ball };
     } else {
       const state = getTurnState(player.id);
-      drawBallAt(state.ball, getPlayerColor(player.id), '#1f1f1f', false);
+      const interpolated = getInterpolatedBallPosition(state);
+      drawBallAt(interpolated, getPlayerColor(player.id), '#1f1f1f', false);
     }
   }
 }

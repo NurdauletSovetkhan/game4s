@@ -12,8 +12,12 @@ const joinRoomBtn = document.getElementById('joinRoom');
 const roomCodeEl = document.getElementById('roomCode');
 const playerNameEl = document.getElementById('playerName');
 const menuStatusEl = document.getElementById('menuStatus');
+const singleModeBtn = document.getElementById('singleModeBtn');
+const multiModeBtn = document.getElementById('multiModeBtn');
+const multiplayerPanelEl = document.querySelector('.multiplayer-panel');
 
 let audioCtx = null;
+let selectedMode = 'single';
 
 function ensureAudio() {
   if (audioCtx) return audioCtx;
@@ -57,6 +61,35 @@ function getPlayerName() {
 
 function setStatus(text) {
   if (menuStatusEl) menuStatusEl.textContent = text;
+}
+
+function updateModeUi() {
+  const single = selectedMode === 'single';
+  if (singleModeBtn) {
+    singleModeBtn.classList.toggle('is-active', single);
+    singleModeBtn.setAttribute('aria-pressed', String(single));
+  }
+  if (multiModeBtn) {
+    multiModeBtn.classList.toggle('is-active', !single);
+    multiModeBtn.setAttribute('aria-pressed', String(!single));
+  }
+  if (multiplayerPanelEl) {
+    multiplayerPanelEl.hidden = single;
+  }
+  setStatus(single ? 'Выбран одиночный режим. Выбери категорию для старта.' : 'Выбран онлайн 1v1. Введи код комнаты или создай новую через категорию.');
+}
+
+function selectMode(mode) {
+  selectedMode = mode === 'multi' ? 'multi' : 'single';
+  updateModeUi();
+}
+
+function startSinglePlayer(categoryId) {
+  const params = new URLSearchParams({
+    mode: 'single',
+    category: categoryId
+  });
+  window.location.href = `./index.html?${params.toString()}`;
 }
 
 async function createRoom(categoryId) {
@@ -118,6 +151,16 @@ joinRoomBtn?.addEventListener('click', () => {
   }, 90);
 });
 
+singleModeBtn?.addEventListener('click', () => {
+  playMenuClick();
+  selectMode('single');
+});
+
+multiModeBtn?.addEventListener('click', () => {
+  playMenuClick();
+  selectMode('multi');
+});
+
 roomCodeEl?.addEventListener('input', () => {
   roomCodeEl.value = roomCodeEl.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 });
@@ -129,10 +172,14 @@ roomCodeEl?.addEventListener('keydown', (event) => {
 for (const category of categories) {
   const button = document.createElement('button');
   button.className = 'cat-btn';
-  button.innerHTML = `<span class="cat-btn__title">${category.title}</span><span class="cat-btn__meta">Сложность ${category.difficulty} · ${category.description}<br/>Нажми, чтобы создать комнату 1v1</span>`;
+  button.innerHTML = `<span class="cat-btn__title">${category.title}</span><span class="cat-btn__meta">Сложность ${category.difficulty} · ${category.description}</span>`;
   button.addEventListener('click', async () => {
     playMenuClick();
     await new Promise((resolve) => setTimeout(resolve, 90));
+    if (selectedMode === 'single') {
+      startSinglePlayer(category.id);
+      return;
+    }
     try {
       await createRoom(category.id);
     } catch (error) {
@@ -141,3 +188,5 @@ for (const category of categories) {
   });
   menuGridEl.appendChild(button);
 }
+
+updateModeUi();

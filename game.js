@@ -36,8 +36,15 @@ const STOP_SPEED = 32;
 const ROLL_DAMPING = 0.96;  // more friction = shorter rolls
 const AIR_DAMPING = 0.999;
 const SPIKE_STEP = 28;
-const MULTI_POLL_MS = 1;
+const MULTI_POLL_MS = 220;
 const MULTI_LIVE_SYNC_MS = 90;
+
+const gameBackgroundImage = new Image();
+let isGameBackgroundLoaded = false;
+gameBackgroundImage.src = './background.png';
+gameBackgroundImage.addEventListener('load', () => {
+  isGameBackgroundLoaded = true;
+});
 
 function updateCanvasViewport() {
   const isPhone = window.innerWidth <= 768;
@@ -120,7 +127,8 @@ const game = {
     pollInFlight: false,
     lastLiveSyncAt: 0,
     pendingSync: null,
-    lastNetworkErrorAt: 0
+    lastNetworkErrorAt: 0,
+    turnPassPending: false
   },
   backgroundStartTime: performance.now(),
   birds: [],
@@ -375,6 +383,32 @@ function mergeSyncOptions(previous, next) {
   };
 }
 
+function isStaleRoomRevision(nextRevision) {
+  const incoming = Number(nextRevision || 0);
+  const current = Number(game.multiplayer.revision || 0);
+  return incoming > 0 && current > 0 && incoming < current;
+}
+
+function applyRoomMeta(room) {
+  if (!room || typeof room !== 'object') return;
+  if (room.players) {
+    game.multiplayer.players = room.players;
+  }
+
+  const incomingRevision = Number(room.revision || 0);
+  if (incomingRevision > 0) {
+    game.multiplayer.revision = Math.max(Number(game.multiplayer.revision || 0), incomingRevision);
+  }
+
+  if (room.turnPlayerId) {
+    setTurnPlayer(room.turnPlayerId);
+  }
+
+  if (!isMyTurn()) {
+    game.multiplayer.turnPassPending = false;
+  }
+}
+
 async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = false } = {}) {
   if (!isMultiplayer()) return;
   const options = { passTurn, allowAnyPlayer, silent };
@@ -401,9 +435,14 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
       body: JSON.stringify(payload)
     });
 
-    game.multiplayer.revision = data.room.revision || game.multiplayer.revision;
-    game.multiplayer.players = data.room.players || game.multiplayer.players;
-    setTurnPlayer(data.room.turnPlayerId || game.multiplayer.turnPlayerId);
+    if (isStaleRoomRevision(data.room?.revision)) {
+      return;
+    }
+
+    applyRoomMeta(data.room);
+    if (passTurn) {
+      game.multiplayer.turnPassPending = false;
+    }
     updateMultiplayerHud();
 
     if (!options.silent) {
@@ -419,6 +458,11 @@ async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = fal
         }
       }
     }
+  } catch (error) {
+    if (passTurn) {
+      game.multiplayer.turnPassPending = false;
+    }
+    throw error;
   } finally {
     game.multiplayer.syncInFlight = false;
     const pending = game.multiplayer.pendingSync;
@@ -441,14 +485,14 @@ async function pollRoomState() {
     );
     const room = data.room;
 
-    game.multiplayer.players = room.players || game.multiplayer.players;
-    game.multiplayer.revision = room.revision || game.multiplayer.revision;
-    if (room.turnPlayerId) {
-      game.multiplayer.turnPlayerId = room.turnPlayerId;
+    if (isStaleRoomRevision(room?.revision)) {
+      return;
     }
 
+    applyRoomMeta(room);
+
     const becameMyTurn =
-      previousTurnId !== game.multiplayer.playerId && room.turnPlayerId === game.multiplayer.playerId;
+      previousTurnId !== game.multiplayer.playerId && game.multiplayer.turnPlayerId === game.multiplayer.playerId;
     const shouldApplySnapshot = Boolean(room.snapshot) && (!isMyTurn() || becameMyTurn);
 
     if (shouldApplySnapshot) {
@@ -493,13 +537,16 @@ function startMultiplayerPolling() {
 
 function endTurnAndSync(reasonText) {
   if (!isMultiplayer()) return;
+  if (game.multiplayer.turnPassPending) return;
   closeQuizModal();
   game.shotUnlocked = false;
   game.shotsRemaining = 0;
+  game.multiplayer.turnPassPending = true;
   saveActiveTurnState();
   game.multiplayer.pendingSync = null;
   setMessage(reasonText);
   syncRoom({ passTurn: true, silent: false }).catch((error) => {
+    game.multiplayer.turnPassPending = false;
     setMessage(`Сеть: ${error.message}`);
   });
 }
@@ -1064,6 +1111,20 @@ function getTimeOfDay() {
 }
 
 function drawLiveBackground() {
+  if (isGameBackgroundLoaded) {
+    const imgW = gameBackgroundImage.naturalWidth;
+    const imgH = gameBackgroundImage.naturalHeight;
+    if (imgW > 0 && imgH > 0) {
+      const scale = Math.max(canvas.width / imgW, canvas.height / imgH);
+      const drawW = imgW * scale;
+      const drawH = imgH * scale;
+      const offsetX = (canvas.width - drawW) * 0.5;
+      const offsetY = (canvas.height - drawH) * 0.5;
+      ctx.drawImage(gameBackgroundImage, offsetX, offsetY, drawW, drawH);
+      return;
+    }
+  }
+
   const t = getTimeOfDay();
   const isDaytime = t < 0.5;
   const phase = isDaytime ? t * 2 : (t - 0.5) * 2;

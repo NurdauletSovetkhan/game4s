@@ -8,8 +8,15 @@
 body {
   margin: 0;
   font-family: 'Handlee', system-ui, sans-serif;
-  background: #fbf7ea;
+  background-color: #fbf7ea;
   color: #1e1d1a;
+}
+
+body.menu-page {
+  background-image: url('./menu-background.png');
+  background-repeat: repeat;
+  background-size: auto;
+  background-position: top left;
 }
 
 .layout {
@@ -123,6 +130,20 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 10px;
+}
+
+.mode-panel {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.mode-btn {
+  flex: 1;
+}
+
+.mode-btn.is-active {
+  background: #f0e6c9;
 }
 
 .multiplayer-panel {

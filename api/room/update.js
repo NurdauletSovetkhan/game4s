@@ -41,6 +41,17 @@ export default async function handler(req, res) {
       return;
     }
 
+    const baseRevision = Number(body.baseRevision || 0);
+    const currentRevision = Number(room.revision || 1);
+    if (baseRevision > 0 && currentRevision !== baseRevision) {
+      sendJson(res, 409, {
+        error: 'Room revision mismatch',
+        code: 'REVISION_MISMATCH',
+        room
+      });
+      return;
+    }
+
     if (body.snapshot) {
       room.snapshot = body.snapshot;
     }

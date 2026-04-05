@@ -1,5 +1,6 @@
 import { createAudioController } from './game-audio.js';
 import { COURSES, WORLD_HEIGHT, WORLD_WIDTH, createCategoryDefs } from './game-data.js';
+import { MultiplayerController } from './game/multiplayer-controller.js';
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -346,219 +347,50 @@ function applySnapshot(snapshot) {
   updateMultiplayerHud();
 }
 
-async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  let data = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.error || 'Network error');
-  }
-  return data;
-}
+let multiplayerController = null;
 
-function setTurnPlayer(turnPlayerId) {
-  if (!isMultiplayer()) return;
-  if (!turnPlayerId) return;
-
-  if (game.multiplayer.turnPlayerId && game.multiplayer.turnPlayerId !== turnPlayerId) {
-    saveActiveTurnState();
-  }
-
-  game.multiplayer.turnPlayerId = turnPlayerId;
-  loadTurnState(turnPlayerId);
-  applyTurnStatsToGame();
-  updateMultiplayerHud();
-}
-
-function mergeSyncOptions(previous, next) {
-  if (!previous) return { ...next };
-  return {
-    passTurn: Boolean(previous.passTurn || next.passTurn),
-    allowAnyPlayer: Boolean(previous.allowAnyPlayer || next.allowAnyPlayer),
-    silent: Boolean(previous.silent && next.silent)
-  };
-}
-
-function isStaleRoomRevision(nextRevision) {
-  const incoming = Number(nextRevision || 0);
-  const current = Number(game.multiplayer.revision || 0);
-  return incoming > 0 && current > 0 && incoming < current;
-}
-
-function applyRoomMeta(room) {
-  if (!room || typeof room !== 'object') return;
-  if (room.players) {
-    game.multiplayer.players = room.players;
-  }
-
-  const incomingRevision = Number(room.revision || 0);
-  if (incomingRevision > 0) {
-    game.multiplayer.revision = Math.max(Number(game.multiplayer.revision || 0), incomingRevision);
-  }
-
-  if (room.turnPlayerId) {
-    setTurnPlayer(room.turnPlayerId);
-  }
-
-  if (!isMyTurn()) {
-    game.multiplayer.turnPassPending = false;
-  }
-}
-
-async function syncRoom({ passTurn = false, allowAnyPlayer = false, silent = false } = {}) {
-  if (!isMultiplayer()) return;
-  const options = { passTurn, allowAnyPlayer, silent };
-
-  if (game.multiplayer.syncInFlight) {
-    game.multiplayer.pendingSync = mergeSyncOptions(game.multiplayer.pendingSync, options);
-    return;
-  }
-
-  game.multiplayer.syncInFlight = true;
-
-  const payload = {
-    roomCode: game.multiplayer.roomCode,
-    playerId: game.multiplayer.playerId,
-    passTurn: options.passTurn,
-    allowAnyPlayer: options.allowAnyPlayer,
-    snapshot: serializeSnapshot()
-  };
-
-  try {
-    const data = await fetchJson('./api/room/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (isStaleRoomRevision(data.room?.revision)) {
-      return;
+function initMultiplayerController() {
+  multiplayerController = new MultiplayerController({
+    game,
+    pollMs: MULTI_POLL_MS,
+    liveSyncMs: MULTI_LIVE_SYNC_MS,
+    stopSpeed: STOP_SPEED,
+    hooks: {
+      serializeSnapshot,
+      applySnapshot,
+      saveActiveTurnState,
+      loadTurnState,
+      applyTurnStatsToGame,
+      updateMultiplayerHud,
+      isMyTurn,
+      closeQuizModal,
+      currentTurnPlayer,
+      setMessage,
+      openQuizModal,
+      ballSpeed,
+      isQuizModalHidden: () => Boolean(quizModalEl.hidden)
     }
-
-    applyRoomMeta(data.room);
-    if (passTurn) {
-      game.multiplayer.turnPassPending = false;
-    }
-    updateMultiplayerHud();
-
-    if (!options.silent) {
-      if (!isMyTurn()) {
-        closeQuizModal();
-        const turn = currentTurnPlayer();
-        setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
-      } else if (!game.shotUnlocked && ballSpeed() <= STOP_SPEED) {
-        if (quizModalEl.hidden) {
-          openQuizModal('Твой ход. Реши задачу для удара.');
-        } else {
-          setMessage('Твой ход. Реши задачу для удара.');
-        }
-      }
-    }
-  } catch (error) {
-    if (passTurn) {
-      game.multiplayer.turnPassPending = false;
-    }
-    throw error;
-  } finally {
-    game.multiplayer.syncInFlight = false;
-    const pending = game.multiplayer.pendingSync;
-    game.multiplayer.pendingSync = null;
-    if (pending) {
-      syncRoom(pending).catch(() => {});
-    }
-  }
-}
-
-async function pollRoomState() {
-  if (!isMultiplayer() || game.multiplayer.initializing || game.multiplayer.pollInFlight) return;
-
-  game.multiplayer.pollInFlight = true;
-
-  try {
-    const previousTurnId = game.multiplayer.turnPlayerId;
-    const data = await fetchJson(
-      `./api/room/state?room=${encodeURIComponent(game.multiplayer.roomCode)}&player=${encodeURIComponent(game.multiplayer.playerId)}`
-    );
-    const room = data.room;
-
-    if (isStaleRoomRevision(room?.revision)) {
-      return;
-    }
-
-    applyRoomMeta(room);
-
-    const becameMyTurn =
-      previousTurnId !== game.multiplayer.playerId && game.multiplayer.turnPlayerId === game.multiplayer.playerId;
-    const shouldApplySnapshot = Boolean(room.snapshot) && (!isMyTurn() || becameMyTurn);
-
-    if (shouldApplySnapshot) {
-      applySnapshot(room.snapshot);
-    } else {
-      updateMultiplayerHud();
-      applyTurnStatsToGame();
-    }
-
-    if (!isMyTurn()) {
-      closeQuizModal();
-      const turn = currentTurnPlayer();
-      setMessage(`Ход соперника: ${turn?.name || 'ожидание'}...`);
-    } else if (becameMyTurn) {
-      if (game.shotsRemaining > 0) {
-        game.shotUnlocked = true;
-        setMessage(`Твой ход. Осталось ударов: ${game.shotsRemaining}.`);
-      } else {
-        openQuizModal('Твой ход. Реши задачу и сделай два удара.');
-      }
-    } else if (!game.shotUnlocked && !quizModalEl.hidden) {
-      setMessage('Твой ход. Реши задачу и сделай два удара.');
-    }
-  } catch (error) {
-    const now = performance.now();
-    if (now - game.multiplayer.lastNetworkErrorAt > 1800) {
-      setMessage(`Сеть: ${error.message}`);
-      game.multiplayer.lastNetworkErrorAt = now;
-    }
-  } finally {
-    game.multiplayer.pollInFlight = false;
-  }
-}
-
-function startMultiplayerPolling() {
-  if (!isMultiplayer()) return;
-  if (game.multiplayer.pollTimer) {
-    clearInterval(game.multiplayer.pollTimer);
-  }
-  game.multiplayer.pollTimer = setInterval(pollRoomState, MULTI_POLL_MS);
-}
-
-function endTurnAndSync(reasonText) {
-  if (!isMultiplayer()) return;
-  if (game.multiplayer.turnPassPending) return;
-  closeQuizModal();
-  game.shotUnlocked = false;
-  game.shotsRemaining = 0;
-  game.multiplayer.turnPassPending = true;
-  saveActiveTurnState();
-  game.multiplayer.pendingSync = null;
-  setMessage(reasonText);
-  syncRoom({ passTurn: true, silent: false }).catch((error) => {
-    game.multiplayer.turnPassPending = false;
-    setMessage(`Сеть: ${error.message}`);
   });
 }
 
-function maybeSyncLive(nowMs) {
-  if (!isMultiplayer() || !isMyTurn()) return;
-  if (ballSpeed() <= STOP_SPEED) return;
-  if (nowMs - game.multiplayer.lastLiveSyncAt < MULTI_LIVE_SYNC_MS) return;
+async function fetchJson(url, options) {
+  return multiplayerController.fetchJson(url, options);
+}
 
-  game.multiplayer.lastLiveSyncAt = nowMs;
-  saveActiveTurnState();
-  syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
+async function syncRoom(options = {}) {
+  return multiplayerController.syncRoom(options);
+}
+
+function startMultiplayerPolling() {
+  multiplayerController.startMultiplayerPolling();
+}
+
+function endTurnAndSync(reasonText) {
+  multiplayerController.endTurnAndSync(reasonText);
+}
+
+function maybeSyncLive(nowMs) {
+  multiplayerController.maybeSyncLive(nowMs);
 }
 
 function setScore(value) {
@@ -671,6 +503,12 @@ function openQuizModal(reasonText) {
     closeQuizModal();
     game.shotUnlocked = true;
     setMessage(`Твой ход: осталось ${game.shotsRemaining} удар(а).`);
+    return;
+  }
+
+  // If shot is already unlocked (from correct answer), don't open modal
+  if (game.shotUnlocked) {
+    closeQuizModal();
     return;
   }
 
@@ -857,15 +695,18 @@ function handleHazardDeath(textWithLife, textNoLife) {
         endTurnAndSync('Ход завершён после препятствия.');
       }
     }
+    // Don't open modal here - let player see hearts decrease and continue
     return;
   }
 
+  // Lives reached 0 - ask for a new question
   resetBallToCheckpoint();
   playHazardSound();
   if (isMultiplayer()) {
     endTurnAndSync('Жизни закончились. Ход передан сопернику.');
     return;
   }
+  game.shotUnlocked = false;
   openQuizModal(textNoLife);
 }
 
@@ -1818,6 +1659,7 @@ window.addEventListener('resize', updateCanvasViewport);
 window.addEventListener('orientationchange', updateCanvasViewport);
 
 async function initGame() {
+  initMultiplayerController();
   updateCanvasViewport();
   const ok = await initCategoryFromUrl();
   if (ok) {

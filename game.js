@@ -91,7 +91,7 @@ const game = {
   currentQuestion: null,
   settings: {
     gravity: 1150,
-    shotSpeed: 1050,  // lower speed = easier to control
+    shotSpeed: 2000,  // lower speed = easier to control
     restitution: 0.58,
     spikeHeight: 24,
     waterScale: 0.75
@@ -446,7 +446,7 @@ function worldToScreenY(y) {
 function updateSettingsByDifficulty() {
   const d = game.selectedCategory.difficulty;
   game.settings.gravity = 960 + d * 85;
-  game.settings.shotSpeed = 1150 - d * 45;  // easier difficulty = slower shots
+  game.settings.shotSpeed = 1500 - d * 45;  // easier difficulty = slower shots
   game.settings.restitution = clamp(0.66 - d * 0.035, 0.42, 0.66);
   game.settings.spikeHeight = 20 + d * 3;
   game.settings.waterScale = 0.72 + d * 0.05;

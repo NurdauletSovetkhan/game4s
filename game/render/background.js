@@ -94,41 +94,6 @@ export function createBackgroundRenderer({ ctx, canvas, game, gameBackgroundImag
     ctx.fill();
   }
 
-  function drawWaterfalls(t) {
-    const waterfalls = [
-      { x: canvas.width * 0.25, width: 8 },
-      { x: canvas.width * 0.75, width: 6 }
-    ];
-
-    for (const fall of waterfalls) {
-      ctx.strokeStyle = 'rgba(100, 200, 255, 0.6)';
-      ctx.lineWidth = fall.width;
-      ctx.lineCap = 'round';
-
-      for (let i = 0; i < 5; i++) {
-        const phase = ((t * 3) + i * 0.2) % 1;
-        const startY = canvas.height * (0.4 + phase * 0.3);
-        const endY = canvas.height * 0.7;
-
-        ctx.beginPath();
-        ctx.moveTo(fall.x, startY);
-        ctx.bezierCurveTo(
-          fall.x + Math.sin(phase * Math.PI * 4) * 10,
-          startY + (endY - startY) * 0.5,
-          fall.x - Math.sin(phase * Math.PI * 4 + 1) * 8,
-          endY,
-          fall.x,
-          endY
-        );
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
-      ctx.beginPath();
-      ctx.ellipse(fall.x, canvas.height * 0.7 + 15, fall.width * 1.5, 8, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
 
   function initBirds() {
     game.birds = [];
@@ -208,7 +173,6 @@ export function createBackgroundRenderer({ ctx, canvas, game, gameBackgroundImag
 
     drawMountains(t);
     drawCelestialBodies(t);
-    drawWaterfalls(t);
     drawBirds();
 
     ctx.save();

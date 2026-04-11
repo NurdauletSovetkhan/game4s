@@ -1,6 +1,33 @@
 import { createAudioController } from './game-audio.js';
 import { COURSES, WORLD_HEIGHT, WORLD_WIDTH, createCategoryDefs } from './game-data.js';
 import { MultiplayerController } from './game/multiplayer-controller.js';
+import {
+  AIR_DAMPING,
+  clamp,
+  DESKTOP_VIEW,
+  MAX_DRAG,
+  MIN_DRAG_TO_SHOT,
+  MOBILE_LANDSCAPE_VIEW,
+  MOBILE_PORTRAIT_VIEW,
+  MULTI_LIVE_SYNC_MS,
+  MULTI_POLL_MS,
+  parseAnswerInput,
+  randInt,
+  ROLL_DAMPING,
+  scaledRect,
+  SPIKE_STEP,
+  STOP_SPEED,
+  TABLET_LANDSCAPE_VIEW,
+  TABLET_PORTRAIT_VIEW
+} from './game/constants.js';
+import { createBackgroundRenderer } from './game/render/background.js';
+import { createHudRenderer } from './game/render/hud.js';
+import { createPlayerAnimationRenderer } from './game/render/player-animation.js';
+import { createBootstrapController } from './game/bootstrap.js';
+import { createCameraViewportController } from './game/camera-viewport.js';
+import { createInputController } from './game/input-controller.js';
+import { createPhysicsController } from './game/physics-controller.js';
+import { createQuizController } from './game/quiz-controller.js';
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -25,52 +52,12 @@ const answerInputEl = document.getElementById('answerInput');
 const submitAnswerBtn = document.getElementById('submitAnswer');
 const newQuestionBtn = document.getElementById('newQuestion');
 
-const DESKTOP_VIEW = { width: 1180, height: 640 };
-const MOBILE_PORTRAIT_VIEW = { width: 900, height: 1280 };
-const MOBILE_LANDSCAPE_VIEW = { width: 1140, height: 760 };
-const TABLET_PORTRAIT_VIEW = { width: 1040, height: 1380 };
-const TABLET_LANDSCAPE_VIEW = { width: 1320, height: 900 };
-
-const MAX_DRAG = 190;
-const MIN_DRAG_TO_SHOT = 10;
-const STOP_SPEED = 32;
-const ROLL_DAMPING = 0.96;  // more friction = shorter rolls
-const AIR_DAMPING = 0.999;
-const SPIKE_STEP = 28;
-const MULTI_POLL_MS = 220;
-const MULTI_LIVE_SYNC_MS = 90;
-
 const gameBackgroundImage = new Image();
 let isGameBackgroundLoaded = false;
 gameBackgroundImage.src = './background.png';
 gameBackgroundImage.addEventListener('load', () => {
   isGameBackgroundLoaded = true;
 });
-
-function updateCanvasViewport() {
-  const isPhone = window.innerWidth <= 768;
-  const isTablet = window.innerWidth > 768 && window.innerWidth <= 1200;
-  const isPortrait = window.innerHeight > window.innerWidth;
-
-  let target = DESKTOP_VIEW;
-  if (isPhone && isPortrait) {
-    target = MOBILE_PORTRAIT_VIEW;
-  } else if (isPhone) {
-    target = MOBILE_LANDSCAPE_VIEW;
-  } else if (isTablet && isPortrait) {
-    target = TABLET_PORTRAIT_VIEW;
-  } else if (isTablet) {
-    target = TABLET_LANDSCAPE_VIEW;
-  }
-
-  if (canvas.width !== target.width || canvas.height !== target.height) {
-    canvas.width = target.width;
-    canvas.height = target.height;
-    if (typeof alignCameraToBall === 'function') {
-      alignCameraToBall();
-    }
-  }
-}
 
 const {
   initAudio,
@@ -136,11 +123,37 @@ const game = {
   lastTime: performance.now()
 };
 
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max + 1 - min) + min);
-}
+const { alignCameraToBall, updateCamera, updateCanvasViewport } = createCameraViewportController({
+  game,
+  canvas,
+  worldWidth: WORLD_WIDTH,
+  worldHeight: WORLD_HEIGHT,
+  clamp,
+  desktopView: DESKTOP_VIEW,
+  mobilePortraitView: MOBILE_PORTRAIT_VIEW,
+  mobileLandscapeView: MOBILE_LANDSCAPE_VIEW,
+  tabletPortraitView: TABLET_PORTRAIT_VIEW,
+  tabletLandscapeView: TABLET_LANDSCAPE_VIEW
+});
 
 const CATEGORY_DEFS = createCategoryDefs(randInt);
+
+const { drawLiveBackground } = createBackgroundRenderer({
+  ctx,
+  canvas,
+  game,
+  gameBackgroundImage,
+  isGameBackgroundLoaded: () => isGameBackgroundLoaded
+});
+
+const { drawLivesHud } = createHudRenderer({
+  ctx,
+  canvas,
+  game,
+  isMultiplayer,
+  opponentPlayer,
+  getTurnState
+});
 
 function setMessage(text) {
   messageEl.textContent = text;
@@ -418,18 +431,6 @@ function adjustScore(delta) {
   setScore(game.score + delta);
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function scaledRect(rect, scale) {
-  const cx = rect.x + rect.w * 0.5;
-  const cy = rect.y + rect.h * 0.5;
-  const nw = rect.w * scale;
-  const nh = rect.h * scale;
-  return { x: cx - nw * 0.5, y: cy - nh * 0.5, w: nw, h: nh };
-}
-
 function ballSpeed() {
   return Math.hypot(game.ball.vx, game.ball.vy);
 }
@@ -442,43 +443,6 @@ function worldToScreenY(y) {
   return y - game.camera.y;
 }
 
-function getPointerPos(ev) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  return {
-    x: (ev.clientX - rect.left) * scaleX + game.camera.x,
-    y: (ev.clientY - rect.top) * scaleY + game.camera.y
-  };
-}
-
-function parseAnswerInput(text) {
-  const clean = text.trim().replace(',', '.');
-  if (!clean) return NaN;
-
-  if (/^-?\d+\/-?\d+$/.test(clean)) {
-    const [left, right] = clean.split('/').map(Number);
-    if (right === 0) return NaN;
-    return left / right;
-  }
-
-  return Number(clean);
-}
-
-function getDragVector() {
-  if (!game.dragPos) return { dx: 0, dy: 0, dist: 0 };
-
-  const rawDx = game.dragPos.x - game.ball.x;
-  const rawDy = game.dragPos.y - game.ball.y;
-  const rawDist = Math.hypot(rawDx, rawDy);
-
-  if (rawDist === 0) return { dx: 0, dy: 0, dist: 0 };
-
-  const dist = Math.min(rawDist, MAX_DRAG);
-  const scale = dist / rawDist;
-  return { dx: rawDx * scale, dy: rawDy * scale, dist };
-}
-
 function updateSettingsByDifficulty() {
   const d = game.selectedCategory.difficulty;
   game.settings.gravity = 960 + d * 85;
@@ -488,676 +452,71 @@ function updateSettingsByDifficulty() {
   game.settings.waterScale = 0.72 + d * 0.05;
 }
 
-function createQuestion() {
-  if (!game.selectedCategory) return null;
-  return game.selectedCategory.createQuestion();
-}
-
-function openQuizModal(reasonText) {
-  if (isMultiplayer() && !isMyTurn()) {
-    closeQuizModal();
-    return;
-  }
-
-  if (isMultiplayer() && game.shotsRemaining > 0) {
-    closeQuizModal();
-    game.shotUnlocked = true;
-    setMessage(`Твой ход: осталось ${game.shotsRemaining} удар(а).`);
-    return;
-  }
-
-  // If shot is already unlocked (from correct answer), don't open modal
-  if (game.shotUnlocked) {
-    closeQuizModal();
-    return;
-  }
-
-  if (game.currentQuestion && !quizModalEl.hidden && !game.shotUnlocked) {
-    setMessage(reasonText);
-    return;
-  }
-
-  game.shotUnlocked = false;
-  game.currentQuestion = createQuestion();
-
-  if (!game.currentQuestion) {
-    questionLabelEl.textContent = 'Сначала выбери категорию в меню.';
-    quizModalEl.hidden = false;
-    setMessage(reasonText);
-    return;
-  }
-
-  questionLabelEl.textContent = game.currentQuestion.text;
-  answerInputEl.value = '';
-  quizModalEl.hidden = false;
-  setMessage(reasonText);
-  setTimeout(() => answerInputEl.focus(), 0);
-}
-
-function closeQuizModal() {
-  quizModalEl.hidden = true;
-}
-
-function onCorrectAnswer() {
-  const reward = 8 * game.selectedCategory.difficulty;
-  let lifeGain = 1;
-  adjustScore(reward);
-  if (isMultiplayer()) {
-    game.shotsRemaining = 2;
-    lifeGain = 2;
-    addLives(2);
-  } else {
-    addLives(1);
-  }
-  game.shotUnlocked = true;
-  closeQuizModal();
-  playCorrectSound();
-
-  if (isMultiplayer()) {
-    setMessage(`Верно! Удар открыт (+${reward} очков, +${lifeGain} жизни). Осталось ударов: ${game.shotsRemaining}.`);
-  } else {
-    setMessage(`Верно! Удар открыт (+${reward} очков, +${lifeGain} жизнь).`);
-  }
-
-  if (isMultiplayer()) {
-    saveActiveTurnState();
-    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch((error) => {
-      setMessage(`Сеть: ${error.message}`);
-    });
-  }
-}
-
-function handleAnswerSubmit() {
-  initAudio();
-
-  if (isMultiplayer() && !isMyTurn()) {
-    setMessage('Сейчас ход соперника.');
-    return;
-  }
-
-  if (!game.currentQuestion) return;
-
-  const value = parseAnswerInput(answerInputEl.value);
-  if (Number.isNaN(value)) {
-    setMessage('Введи число (можно десятичное или дробь).');
-    return;
-  }
-
-  const diff = Math.abs(value - game.currentQuestion.answer);
-  const tolerance = game.currentQuestion.tolerance ?? 0.02;
-
-  if (diff <= tolerance) {
-    onCorrectAnswer();
-    return;
-  }
-
-  adjustScore(-2 * game.selectedCategory.difficulty);
-  playWrongSound();
-  setMessage('Неверно. Попробуй снова.');
-
-  if (isMultiplayer()) {
-    saveActiveTurnState();
-    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch((error) => {
-      setMessage(`Сеть: ${error.message}`);
-    });
-  }
-}
-
-function alignCameraToBall() {
-  const targetX = clamp(game.ball.x - canvas.width * 0.5, 0, WORLD_WIDTH - canvas.width);
-  const targetY = clamp(game.ball.y - canvas.height * 0.68, 0, WORLD_HEIGHT - canvas.height);
-  game.camera.x = targetX;
-  game.camera.y = targetY;
-}
-
-function updateCamera(dt) {
-  const targetX = clamp(game.ball.x - canvas.width * 0.5, 0, WORLD_WIDTH - canvas.width);
-  const targetY = clamp(game.ball.y - canvas.height * 0.68, 0, WORLD_HEIGHT - canvas.height);
-  const follow = 1 - Math.exp(-7 * dt);
-  game.camera.x += (targetX - game.camera.x) * follow;
-  game.camera.y += (targetY - game.camera.y) * follow;
-}
-
-function resetBallToCheckpoint() {
-  game.ball.x = game.checkpoint.x;
-  game.ball.y = game.checkpoint.y;
-  game.ball.vx = 0;
-  game.ball.vy = 0;
-  game.ball.grounded = false;
-  game.dragging = false;
-  game.pointerId = null;
-  game.dragPos = null;
-  game.justStopped = false;
-  game.awaitingStopResolution = false;
-  alignCameraToBall();
-}
-
-function loadLevel(index) {
-  game.levelIndex = clamp(index, 0, game.levels.length - 1);
-  game.strokes = 0;
-  game.won = false;
-
-  const level = game.levels[game.levelIndex];
-  game.start = { ...level.start };
-  game.checkpoint = { ...level.start };
-
-  if (isMultiplayer()) {
-    for (const player of game.multiplayer.players) {
-      game.multiplayer.stateByPlayer[player.id] = {
-        ball: { x: level.start.x, y: level.start.y, r: game.ball.r, vx: 0, vy: 0, grounded: false },
-        checkpoint: { x: level.start.x, y: level.start.y },
-        shotUnlocked: false,
-        shotsRemaining: 0,
-        justStopped: false,
-        awaitingStopResolution: false
-      };
-    }
-
-    if (game.multiplayer.turnPlayerId) {
-      loadTurnState(game.multiplayer.turnPlayerId);
-    } else {
-      resetBallToCheckpoint();
-    }
-  } else {
-    resetBallToCheckpoint();
-  }
-
-  game.shotsRemaining = 0;
-
-  game.currentPar = Math.max(3, level.par + (game.selectedCategory.difficulty >= 5 ? -1 : 0));
-
-  levelEl.textContent = String(game.levelIndex + 1);
-  parEl.textContent = String(game.currentPar);
-  strokesEl.textContent = '0';
-  nextButton.disabled = true;
-
-  openQuizModal('Реши задачу, чтобы сделать удар.');
-}
-
-function handleHazardDeath(textWithLife, textNoLife) {
-  if (isMultiplayer()) {
-    resetBallToCheckpoint();
-    playHazardSound();
-
-    if (game.shotsRemaining > 0) {
-      game.shotUnlocked = true;
-      saveActiveTurnState();
-      setMessage(`Препятствие! Осталось ударов: ${game.shotsRemaining}.`);
-      syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
-    } else {
-      endTurnAndSync('Ход завершён после препятствия.');
-    }
-    return;
-  }
-
-  if (game.lives > 0) {
-    addLives(-1);
-    resetBallToCheckpoint();
-    // game.shotUnlocked = isMultiplayer() ? game.shotsRemaining > 0 : true;
-    game.shotUnlocked = false; // Всегда требуем новый вопрос после смерти
-    playHazardSound();
-    setMessage(`${textWithLife} Осталось жизней: ${game.lives}.`);
-    if (isMultiplayer()) {
-      saveActiveTurnState();
-      if (game.shotsRemaining > 0) {
-        syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
-      } else {
-        endTurnAndSync('Ход завершён после препятствия.');
-      }
-    }
-    openQuizModal(`${textWithLife} Осталось жизней: ${game.lives}.`);
-    return;
-  }
-
-  // Lives reached 0 - ask for a new question
-  resetBallToCheckpoint();
-  playHazardSound();
-  if (isMultiplayer()) {
-    endTurnAndSync('Жизни закончились. Ход передан сопернику.');
-    return;
-  }
-  game.shotUnlocked = false;
-  openQuizModal(textNoLife);
-}
-
-function resolveBoundaryCollision() {
-  const b = game.ball;
-
-  if (b.x < b.r) {
-    b.x = b.r;
-    if (b.vx < 0) b.vx *= -game.settings.restitution;
-  }
-
-  if (b.x > WORLD_WIDTH - b.r) {
-    b.x = WORLD_WIDTH - b.r;
-    if (b.vx > 0) b.vx *= -game.settings.restitution;
-  }
-
-  if (b.y < b.r) {
-    b.y = b.r;
-    if (b.vy < 0) b.vy *= -game.settings.restitution;
-  }
-
-  if (b.y > WORLD_HEIGHT - b.r) {
-    b.y = WORLD_HEIGHT - b.r;
-    if (b.vy > 0) {
-      b.vy *= -game.settings.restitution;
-      if (Math.abs(b.vy) < 70) b.vy = 0;
-      b.grounded = true;
-    }
-  }
-}
-
-function resolveRectCollision(rect) {
-  const b = game.ball;
-
-  const nearestX = clamp(b.x, rect.x, rect.x + rect.w);
-  const nearestY = clamp(b.y, rect.y, rect.y + rect.h);
-  const dx = b.x - nearestX;
-  const dy = b.y - nearestY;
-  const distSq = dx * dx + dy * dy;
-  const rr = b.r * b.r;
-
-  if (distSq > rr) return false;
-
-  let normalX = 0;
-  let normalY = -1;
-  let distance = Math.sqrt(distSq);
-
-  if (distance > 0.0001) {
-    normalX = dx / distance;
-    normalY = dy / distance;
-  } else {
-    const fromLeft = Math.abs(b.x - rect.x);
-    const fromRight = Math.abs(rect.x + rect.w - b.x);
-    const fromTop = Math.abs(b.y - rect.y);
-    const fromBottom = Math.abs(rect.y + rect.h - b.y);
-    const minSide = Math.min(fromLeft, fromRight, fromTop, fromBottom);
-
-    if (minSide === fromLeft) {
-      normalX = -1;
-      normalY = 0;
-    } else if (minSide === fromRight) {
-      normalX = 1;
-      normalY = 0;
-    } else if (minSide === fromTop) {
-      normalX = 0;
-      normalY = -1;
-    } else {
-      normalX = 0;
-      normalY = 1;
-    }
-    distance = 0;
-  }
-
-  const penetration = b.r - distance;
-  b.x += normalX * penetration;
-  b.y += normalY * penetration;
-
-  const vn = b.vx * normalX + b.vy * normalY;
-  if (vn < 0) {
-    b.vx -= (1 + game.settings.restitution) * vn * normalX;
-    b.vy -= (1 + game.settings.restitution) * vn * normalY;
-  }
-
-  if (normalY < -0.5 && b.vy >= -24) {
-    b.grounded = true;
-    if (Math.abs(b.vy) < 35) b.vy = 0;
-  }
-
-  return true;
-}
-
-function finishLevel() {
-  game.ball.vx = 0;
-  game.ball.vy = 0;
-  const delta = game.strokes - game.currentPar;
-  const scoreText =
-    delta === 0 ? 'в пар' : delta < 0 ? `${Math.abs(delta)} лучше пара` : `${delta} хуже пара`;
-
-  const bonus = 100 + game.selectedCategory.difficulty * 20 + Math.max(0, (game.currentPar - game.strokes) * 25);
-  adjustScore(bonus);
-  playHoleCompleteSound();
-
-  if (isMultiplayer()) {
-    const hasNextLevel = game.levelIndex < game.levels.length - 1;
-    if (hasNextLevel) {
-      loadLevel(game.levelIndex + 1);
-      endTurnAndSync(`Лунка пройдена (${scoreText}). Бонус +${bonus}. Ход сопернику.`);
-      return;
-    }
-
-    game.won = true;
-    setMessage(`Матч завершён! Последняя лунка: ${scoreText}. Бонус +${bonus}.`);
-    syncRoom({ passTurn: false, allowAnyPlayer: true }).catch((error) => {
-      setMessage(`Сеть: ${error.message}`);
-    });
-    return;
-  }
-
-  game.won = true;
-  nextButton.disabled = game.levelIndex >= game.levels.length - 1;
-
-  setMessage(`Лунка пройдена: ${scoreText}. Бонус +${bonus}.`);
-}
-
-function update(dt) {
-  if (!game.selectedCategory || game.won || game.dragging) return;
-  if (isMultiplayer() && !isMyTurn()) return;
-
-  const moving = ballSpeed() > STOP_SPEED;
-  if (!moving && !game.ball.grounded && !game.awaitingStopResolution) return;
-
-  const level = game.levels[game.levelIndex];
-  const b = game.ball;
-
-  const subStep = 1 / 120;
-  let remaining = dt;
-
-  while (remaining > 0) {
-    const step = Math.min(subStep, remaining);
-    remaining -= step;
-
-    b.grounded = false;
-    b.vy += game.settings.gravity * step;
-
-    b.x += b.vx * step;
-    b.y += b.vy * step;
-
-    resolveBoundaryCollision();
-
-    for (const platform of level.platforms) {
-      resolveRectCollision(platform);
-    }
-
-    if (b.grounded) {
-      b.vx *= ROLL_DAMPING;
-    } else {
-      b.vx *= AIR_DAMPING;
-      b.vy *= AIR_DAMPING;
-    }
-  }
-
-  for (const pond of level.water) {
-    const scaled = scaledRect(pond, game.settings.waterScale);
-    if (
-      b.x + b.r > scaled.x &&
-      b.x - b.r < scaled.x + scaled.w &&
-      b.y + b.r > scaled.y &&
-      b.y - b.r < scaled.y + scaled.h
-    ) {
-      handleHazardDeath(
-        'Плюх! Вода: потрачена 1 жизнь, респавн с чекпоинта.',
-        'Плюх! Возрождение с чекпоинта. Жизни закончились — реши задачу заново.'
-      );
-      return;
-    }
-  }
-
-  if (b.y + b.r >= WORLD_HEIGHT - game.settings.spikeHeight) {
-    handleHazardDeath(
-      'Шипы! Потрачена 1 жизнь, респавн с чекпоинта.',
-      'Шипы! Возрождение с чекпоинта. Жизни закончились — реши задачу.'
-    );
-    return;
-  }
-
-  const hole = level.hole;
-  const holeDist = Math.hypot(b.x - hole.x, b.y - hole.y);
-  if (holeDist < hole.r - 2 && ballSpeed() < 220) {
-    finishLevel();
-    return;
-  }
-
-  if (ballSpeed() <= STOP_SPEED) {
-    b.vx = 0;
-    b.vy = 0;
-
-    if (Math.hypot(b.x - game.checkpoint.x, b.y - game.checkpoint.y) > 18) {
-      game.checkpoint.x = b.x;
-      game.checkpoint.y = b.y;
-    }
-
-    if (!game.justStopped) {
-      playCheckpointSound();
-      if (isMultiplayer()) {
-        saveActiveTurnState();
-        if (game.shotsRemaining > 0) {
-          game.shotUnlocked = true;
-          game.awaitingStopResolution = false;
-          setMessage(`Чекпоинт сохранён. Осталось ударов: ${game.shotsRemaining}.`);
-          syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
-        } else {
-          game.awaitingStopResolution = false;
-          endTurnAndSync('Чекпоинт сохранён. Ход передан сопернику.');
-        }
-      } else {
-        openQuizModal('Чекпоинт сохранён. Реши новую задачу для следующего удара.');
-      }
-      game.justStopped = true;
-    }
-  } else {
-    game.justStopped = false;
-  }
-}
-
-function drawPaperBackground() {
-  ctx.fillStyle = '#fefcf4';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.05)';
-  ctx.lineWidth = 1;
-  for (let y = 18; y < canvas.height; y += 30) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y + (y % 2 === 0 ? 1 : 0));
-    ctx.stroke();
-  }
-}
-
-function getTimeOfDay() {
-  const elapsed = (performance.now() - game.backgroundStartTime) / 1000;
-  const cycleDuration = 120;
-  return (elapsed % cycleDuration) / cycleDuration;
-}
-
-function drawLiveBackground() {
-  if (isGameBackgroundLoaded) {
-    const imgW = gameBackgroundImage.naturalWidth;
-    const imgH = gameBackgroundImage.naturalHeight;
-    if (imgW > 0 && imgH > 0) {
-      const scale = Math.max(canvas.width / imgW, canvas.height / imgH);
-      const drawW = imgW * scale;
-      const drawH = imgH * scale;
-      const offsetX = (canvas.width - drawW) * 0.5;
-      const offsetY = (canvas.height - drawH) * 0.5;
-      ctx.drawImage(gameBackgroundImage, offsetX, offsetY, drawW, drawH);
-      return;
-    }
-  }
-
-  const t = getTimeOfDay();
-  const isDaytime = t < 0.5;
-  const phase = isDaytime ? t * 2 : (t - 0.5) * 2;
-
-  let topColor = '#8ec7f7';
-  let bottomColor = '#cdecb6';
-  if (isDaytime) {
-    topColor = `hsl(${200 - phase * 30}, ${70 - phase * 20}%, ${80 + phase * 10}%)`;
-    bottomColor = `hsl(${140 + phase * 20}, ${60 + phase * 10}%, ${85 + phase * 10}%)`;
-  } else {
-    topColor = `hsl(${260 - phase * 60}, ${50 + phase * 30}%, ${45 - phase * 35}%)`;
-    bottomColor = `hsl(${200 - phase * 80}, ${40 + phase * 20}%, ${50 - phase * 40}%)`;
-  }
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  gradient.addColorStop(0, topColor);
-  gradient.addColorStop(1, bottomColor);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  drawMountains(t);
-  drawCelestialBodies(t);
-  drawWaterfalls(t);
-  drawBirds();
-
-  ctx.save();
-  ctx.globalAlpha = 0.08;
-  drawPaperBackground();
-  ctx.restore();
-}
-
-function drawMountains(t) {
-  const baseY = canvas.height * 0.65;
-
-  ctx.fillStyle = '#4a5f3f';
-  ctx.beginPath();
-  ctx.moveTo(-50, canvas.height);
-  ctx.quadraticCurveTo(canvas.width * 0.2, baseY - 80, canvas.width * 0.35, baseY);
-  ctx.lineTo(canvas.width, canvas.height);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = '#5a7a4f';
-  ctx.beginPath();
-  ctx.moveTo(canvas.width * 0.1, canvas.height);
-  ctx.quadraticCurveTo(canvas.width * 0.45, baseY - 120, canvas.width * 0.65, baseY + 20);
-  ctx.lineTo(canvas.width * 1.1, canvas.height);
-  ctx.closePath();
-  ctx.fill();
-
-  const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
-  if (sunX < canvas.width * 0.6) {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-    ctx.beginPath();
-    ctx.moveTo(canvas.width * 0.35, baseY);
-    ctx.quadraticCurveTo(canvas.width * 0.4, baseY - 40, canvas.width * 0.5, baseY + 30);
-    ctx.lineTo(canvas.width * 0.5, baseY);
-    ctx.closePath();
-    ctx.fill();
-  }
-}
-
-function drawCelestialBodies(t) {
-  const sunX = Math.sin((t - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
-  const sunY = Math.cos((t - 0.25) * Math.PI * 2) * canvas.height * 0.2 + canvas.height * 0.25;
-
-  if (t < 0.5) {
-    const radius = 34;
-    const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, radius * 1.5);
-    glow.addColorStop(0, 'rgba(255, 200, 80, 0.4)');
-    glow.addColorStop(1, 'rgba(255, 150, 0, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(sunX - radius * 1.5, sunY - radius * 1.5, radius * 3, radius * 3);
-
-    ctx.fillStyle = '#ffdd55';
-    ctx.beginPath();
-    ctx.arc(sunX, sunY, radius, 0, Math.PI * 2);
-    ctx.fill();
-    return;
-  }
-
-  const moonPhase = (t - 0.5) * 2;
-  const moonX = Math.sin((moonPhase - 0.25) * Math.PI * 2) * canvas.width * 0.6 + canvas.width * 0.5;
-  const moonY = Math.cos((moonPhase - 0.25) * Math.PI * 2) * canvas.height * 0.2 + canvas.height * 0.25;
-  const moonRadius = 28;
-
-  const glow = ctx.createRadialGradient(moonX, moonY, 0, moonX, moonY, moonRadius * 2);
-  glow.addColorStop(0, 'rgba(200, 220, 255, 0.3)');
-  glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = glow;
-  ctx.fillRect(moonX - moonRadius * 2, moonY - moonRadius * 2, moonRadius * 4, moonRadius * 4);
-
-  ctx.fillStyle = '#e8e8ff';
-  ctx.beginPath();
-  ctx.arc(moonX, moonY, moonRadius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = 'rgba(100, 100, 150, 0.4)';
-  ctx.beginPath();
-  ctx.arc(moonX - 6, moonY - 5, 3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(moonX + 8, moonY + 3, 2, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawWaterfalls(t) {
-  const waterfalls = [
-    { x: canvas.width * 0.25, width: 8 },
-    { x: canvas.width * 0.75, width: 6 }
-  ];
-
-  for (const fall of waterfalls) {
-    ctx.strokeStyle = 'rgba(100, 200, 255, 0.6)';
-    ctx.lineWidth = fall.width;
-    ctx.lineCap = 'round';
-
-    for (let i = 0; i < 5; i++) {
-      const phase = ((t * 3) + i * 0.2) % 1;
-      const startY = canvas.height * (0.4 + phase * 0.3);
-      const endY = canvas.height * 0.7;
-
-      ctx.beginPath();
-      ctx.moveTo(fall.x, startY);
-      ctx.bezierCurveTo(
-        fall.x + Math.sin(phase * Math.PI * 4) * 10,
-        startY + (endY - startY) * 0.5,
-        fall.x - Math.sin(phase * Math.PI * 4 + 1) * 8,
-        endY,
-        fall.x,
-        endY
-      );
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = 'rgba(150, 220, 255, 0.3)';
-    ctx.beginPath();
-    ctx.ellipse(fall.x, canvas.height * 0.7 + 15, fall.width * 1.5, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function initBirds() {
-  game.birds = [];
-  for (let i = 0; i < 4; i += 1) {
-    game.birds.push({
-      x: Math.random() * (canvas.width + 300) - 150,
-      y: Math.random() * canvas.height * 0.3 + 20,
-      speed: 30 + Math.random() * 40,
-      size: 0.6 + Math.random() * 0.5
-    });
-  }
-}
-
-function drawBirds() {
-  if (game.birds.length === 0) initBirds();
-
-  const elapsedSec = (performance.now() - game.backgroundStartTime) / 1000;
-  const isDaytime = getTimeOfDay() < 0.5;
-  ctx.save();
-  ctx.globalAlpha = isDaytime ? 0.6 : 0.28;
-  ctx.fillStyle = isDaytime ? '#2d2d2d' : '#555';
-
-  for (const bird of game.birds) {
-    const flightX = ((bird.x + bird.speed * elapsedSec) % (canvas.width + 240)) - 120;
-    const flightY = bird.y + Math.sin(elapsedSec * 2.2 + bird.x * 0.01) * 16;
-
-    ctx.save();
-    ctx.translate(flightX, flightY);
-    ctx.scale(bird.size, bird.size);
-    ctx.beginPath();
-    ctx.moveTo(-8, 0);
-    ctx.quadraticCurveTo(-4, -3, 0, -2);
-    ctx.quadraticCurveTo(4, -3, 8, 0);
-    ctx.quadraticCurveTo(4, 1, 0, 0);
-    ctx.quadraticCurveTo(-4, 1, -8, 0);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  ctx.restore();
-}
+const { openQuizModal, closeQuizModal, handleAnswerSubmit } = createQuizController({
+  game,
+  quizModalEl,
+  questionLabelEl,
+  answerInputEl,
+  initAudio,
+  parseAnswerInput,
+  setMessage,
+  isMultiplayer,
+  isMyTurn,
+  adjustScore,
+  addLives,
+  playCorrectSound,
+  playWrongSound,
+  saveActiveTurnState,
+  syncRoom
+});
+
+const { getDragVector, startDrag, moveDrag, endDrag } = createInputController({
+  game,
+  canvas,
+  maxDrag: MAX_DRAG,
+  minDragToShot: MIN_DRAG_TO_SHOT,
+  stopSpeed: STOP_SPEED,
+  initAudio,
+  setMessage,
+  isMultiplayer,
+  isMyTurn,
+  ballSpeed,
+  playShotSound,
+  saveActiveTurnState,
+  syncRoom,
+  strokesEl
+});
+
+const { resetBallToCheckpoint, loadLevel, finishLevel, update } = createPhysicsController({
+  game,
+  canvas,
+  worldWidth: WORLD_WIDTH,
+  worldHeight: WORLD_HEIGHT,
+  stopSpeed: STOP_SPEED,
+  rollDamping: ROLL_DAMPING,
+  airDamping: AIR_DAMPING,
+  clamp,
+  scaledRect,
+  isMultiplayer,
+  isMyTurn,
+  loadTurnState,
+  saveActiveTurnState,
+  playHazardSound,
+  playCheckpointSound,
+  playHoleCompleteSound,
+  setMessage,
+  syncRoom,
+  endTurnAndSync,
+  openQuizModal,
+  addLives,
+  adjustScore,
+  nextButton,
+  levelEl,
+  parEl,
+  strokesEl,
+  ballSpeed,
+  alignCameraToBall
+});
 
 function drawRoundedRect(rect, fill, stroke, radius = 10, lineWidth = 2.2) {
   const x = worldToScreenX(rect.x);
@@ -1208,110 +567,6 @@ function drawBottomSpikes() {
   ctx.fill();
 }
 
-function drawHeartIcon(x, y, size, fill = '#d94a4a', stroke = '#8f2424') {
-  const half = size * 0.5;
-  const top = y - half;
-  const lobRadius = size * 0.28;
-  const leftLobX = x - size * 0.2;
-  const rightLobX = x + size * 0.2;
-  const lobY = top + size * 0.34;
-  const bottomY = y + half;
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(x, bottomY);
-  ctx.bezierCurveTo(x - size * 0.42, y + size * 0.2, x - size * 0.52, y - size * 0.05, leftLobX, lobY);
-  ctx.arc(leftLobX, lobY, lobRadius, Math.PI * 0.84, Math.PI * 1.98);
-  ctx.arc(rightLobX, lobY, lobRadius, Math.PI * 1.15, Math.PI * 0.16, true);
-  ctx.bezierCurveTo(x + size * 0.52, y - size * 0.05, x + size * 0.42, y + size * 0.2, x, bottomY);
-  ctx.closePath();
-
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.lineWidth = Math.max(1.2, size * 0.09);
-  ctx.strokeStyle = stroke;
-  ctx.stroke();
-
-  ctx.globalAlpha = 0.26;
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.ellipse(x - size * 0.13, top + size * 0.28, size * 0.14, size * 0.1, -0.4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawLivesHud() {
-  if (isMultiplayer()) {
-    const meId = game.multiplayer.playerId;
-    const rival = opponentPlayer();
-    const myState = getTurnState(meId);
-    const rivalState = getTurnState(rival?.id);
-
-    const myShots = meId === game.multiplayer.turnPlayerId ? game.shotsRemaining : myState.shotsRemaining;
-    const rivalShots = rival?.id === game.multiplayer.turnPlayerId ? game.shotsRemaining : rivalState.shotsRemaining;
-
-    ctx.save();
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.fillStyle = '#1f1f1f';
-    ctx.font = '18px Handlee, sans-serif';
-    ctx.fillText(`Ты: ❤ ${myShots}`, canvas.width - 14, 12);
-    ctx.fillStyle = '#333';
-    ctx.fillText(`Соперник: ❤ ${rivalShots}`, canvas.width - 14, 34);
-    ctx.restore();
-    return;
-  }
-
-  const displayedLives = Math.max(0, Math.round(game.lives));
-  const isCompact = canvas.width <= 980;
-  const heartSize = isCompact ? 22 : 18;
-  const spacingX = Math.round(heartSize * 1.08);
-  const spacingY = Math.round(heartSize * 1.05);
-  const margin = isCompact ? 12 : 14;
-  const maxCols = Math.max(4, Math.min(10, Math.floor((canvas.width * 0.32) / spacingX)));
-  const maxRows = 3;
-  const maxVisible = maxCols * maxRows;
-  const visibleCount = Math.min(displayedLives, maxVisible);
-  const overflow = Math.max(0, displayedLives - visibleCount);
-
-  const colsInFirstRow = Math.min(visibleCount, maxCols);
-  const blockWidth = Math.max(colsInFirstRow - 1, 0) * spacingX + heartSize;
-  const startX = canvas.width - margin - blockWidth + heartSize * 0.5;
-  const startY = margin + heartSize * 0.5;
-
-  ctx.save();
-  for (let i = 0; i < visibleCount; i += 1) {
-    const row = Math.floor(i / maxCols);
-    const col = i % maxCols;
-    const x = startX + col * spacingX;
-    const y = startY + row * spacingY;
-    drawHeartIcon(x, y, heartSize);
-  }
-
-  if (displayedLives === 0) {
-    const x = canvas.width - margin - heartSize * 0.5;
-    const y = startY;
-    drawHeartIcon(x, y, heartSize, '#d6d6d6', '#8f8f8f');
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#4b4b4b';
-    ctx.font = `${Math.round(heartSize * 0.9)}px Handlee, sans-serif`;
-    ctx.fillText('0', x - heartSize * 0.75, y);
-  }
-
-  if (overflow > 0) {
-    const row = Math.floor((visibleCount - 1) / maxCols);
-    const y = startY + row * spacingY;
-    const x = canvas.width - margin;
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#1f1f1f';
-    ctx.font = `${Math.round(heartSize * 0.88)}px Handlee, sans-serif`;
-    ctx.fillText(`+${overflow}`, x, y + heartSize * 0.08);
-  }
-  ctx.restore();
-}
-
 function drawCourse() {
   const level = game.levels[game.levelIndex];
 
@@ -1358,232 +613,23 @@ function drawCourse() {
   ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
 }
 
-function drawAimGuide() {
-  if (!game.dragging || !game.dragPos) return;
-
-  const { dx, dy, dist } = getDragVector();
-  if (dist <= 0) return;
-
-  const power = dist / MAX_DRAG;
-  const startX = worldToScreenX(game.ball.x);
-  const startY = worldToScreenY(game.ball.y);
-  const endX = worldToScreenX(game.ball.x - dx * 1.8);
-  const endY = worldToScreenY(game.ball.y - dy * 1.8);
-
-  ctx.strokeStyle = power > 0.72 ? '#d64949' : '#262626';
-  ctx.lineWidth = 4;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
-  ctx.beginPath();
-  ctx.moveTo(startX, startY);
-  ctx.lineTo(endX, endY);
-  ctx.stroke();
-
-  const arrowHead = 12;
-  const angle = Math.atan2(endY - startY, endX - startX);
-
-  ctx.beginPath();
-  ctx.moveTo(endX, endY);
-  ctx.lineTo(
-    endX - arrowHead * Math.cos(angle - Math.PI / 6),
-    endY - arrowHead * Math.sin(angle - Math.PI / 6)
-  );
-  ctx.moveTo(endX, endY);
-  ctx.lineTo(
-    endX - arrowHead * Math.cos(angle + Math.PI / 6),
-    endY - arrowHead * Math.sin(angle + Math.PI / 6)
-  );
-  ctx.stroke();
-}
-
-function drawClub() {
-  const ballX = worldToScreenX(game.ball.x);
-  const ballY = worldToScreenY(game.ball.y);
-
-  let angle = null;
-  let distance = 0;
-
-  if (game.dragging && game.dragPos) {
-    const { dx, dy, dist } = getDragVector();
-    angle = Math.atan2(dy, dx);
-    distance = 28 + dist * 0.12;
-  } else if (game.swingTime > 0) {
-    const progress = 1 - game.swingTime / 0.12;
-    angle = game.lastShotAngle + 1.1 - progress * 2.2;
-    distance = 28;
-  }
-
-  if (angle === null) return;
-
-  const pivotX = ballX + Math.cos(angle) * distance;
-  const pivotY = ballY + Math.sin(angle) * distance;
-  const shaftLen = 52;
-
-  const tipX = pivotX + Math.cos(angle) * shaftLen;
-  const tipY = pivotY + Math.sin(angle) * shaftLen;
-
-  ctx.strokeStyle = '#9c6b30';
-  ctx.lineWidth = 5;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.moveTo(pivotX, pivotY);
-  ctx.lineTo(tipX, tipY);
-  ctx.stroke();
-
-  ctx.save();
-  ctx.translate(tipX, tipY);
-  ctx.rotate(angle);
-  ctx.fillStyle = '#2b2b2b';
-  ctx.fillRect(-7, -6, 16, 12);
-  ctx.restore();
-}
-
-function drawBallAt(ball, fill, stroke = '#1f1f1f', ring = false) {
-  const sx = worldToScreenX(ball.x);
-  const sy = worldToScreenY(ball.y);
-
-  ctx.fillStyle = fill;
-  ctx.beginPath();
-  ctx.arc(sx, sy, ball.r, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.arc(sx, sy, ball.r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  if (ring) {
-    ctx.strokeStyle = '#232323';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(sx, sy, ball.r + 4, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-}
-
-function getInterpolatedBallPosition(state) {
-  if (!state || !state.lastSyncTime || !state.prevBall) return state.ball;
-  const now = performance.now();
-  const timeSinceSync = now - state.lastSyncTime;
-  const progress = Math.min(1, timeSinceSync / MULTI_LIVE_SYNC_MS);
-  const prev = state.prevBall;
-  const curr = state.ball;
-  return {
-    x: prev.x + (curr.x - prev.x) * progress,
-    y: prev.y + (curr.y - prev.y) * progress,
-    r: curr.r,
-    vx: curr.vx,
-    vy: curr.vy,
-    grounded: curr.grounded
-  };
-}
-
-function drawBall() {
-  if (!isMultiplayer()) {
-    drawBallAt(game.ball, '#ffffff');
-    return;
-  }
-
-  for (const player of game.multiplayer.players) {
-    const isTurn = player.id === game.multiplayer.turnPlayerId;
-    if (isTurn) {
-      drawBallAt(game.ball, getPlayerColor(player.id), '#1f1f1f', true);
-      const state = getTurnState(player.id);
-      state.ball = { ...game.ball };
-    } else {
-      const state = getTurnState(player.id);
-      const interpolated = getInterpolatedBallPosition(state);
-      drawBallAt(interpolated, getPlayerColor(player.id), '#1f1f1f', false);
-    }
-  }
-}
-
-function frame(now) {
-  const dt = Math.min((now - game.lastTime) / 1000, 0.033);
-  game.lastTime = now;
-
-  game.swingTime = Math.max(0, game.swingTime - dt);
-
-  update(dt);
-  updateCamera(dt);
-  drawCourse();
-  drawAimGuide();
-  drawClub();
-  drawBall();
-
-  if (isMultiplayer() && isMyTurn()) {
-    maybeSyncLive(now);
-  }
-
-  requestAnimationFrame(frame);
-}
-
-function startDrag(ev) {
-  initAudio();
-
-  if (!game.selectedCategory || game.won || !game.shotUnlocked || ballSpeed() > STOP_SPEED) return;
-  if (isMultiplayer() && !isMyTurn()) return;
-
-  const pointer = getPointerPos(ev);
-  const dx = pointer.x - game.ball.x;
-  const dy = pointer.y - game.ball.y;
-  if (Math.hypot(dx, dy) > 34) {
-    setMessage('Начни натяжку прямо от мячика.');
-    return;
-  }
-
-  game.dragging = true;
-  game.pointerId = ev.pointerId;
-  game.dragPos = pointer;
-  canvas.setPointerCapture(ev.pointerId);
-}
-
-function moveDrag(ev) {
-  if (!game.dragging || game.pointerId !== ev.pointerId) return;
-  game.dragPos = getPointerPos(ev);
-}
-
-function endDrag(ev) {
-  if (!game.dragging || game.pointerId !== ev.pointerId) return;
-
-  game.dragging = false;
-  game.pointerId = null;
-  canvas.releasePointerCapture(ev.pointerId);
-
-  const { dx, dy, dist } = getDragVector();
-  game.dragPos = null;
-
-  if (dist < MIN_DRAG_TO_SHOT) {
-    setMessage('Слишком слабый удар.');
-    return;
-  }
-
-  const power = dist / MAX_DRAG;
-  game.ball.vx = -(dx / dist) * game.settings.shotSpeed * power;
-  game.ball.vy = -(dy / dist) * game.settings.shotSpeed * power;
-  game.lastShotAngle = Math.atan2(-dy, -dx);
-  game.swingTime = 0.12;
-  game.ball.grounded = false;
-  game.justStopped = false;
-  game.awaitingStopResolution = true;
-  game.shotUnlocked = false;
-  if (isMultiplayer()) {
-    game.shotsRemaining = Math.max(0, game.shotsRemaining - 1);
-  }
-
-  game.strokes += 1;
-  strokesEl.textContent = String(game.strokes);
-  playShotSound(power);
-  if (isMultiplayer()) {
-    setMessage(`Удар! Осталось попыток в ходе: ${game.shotsRemaining}.`);
-    saveActiveTurnState();
-    syncRoom({ passTurn: false, allowAnyPlayer: false, silent: true }).catch(() => {});
-  } else {
-    setMessage('Удар!');
-  }
-}
+const { frame } = createPlayerAnimationRenderer({
+  ctx,
+  game,
+  maxDrag: MAX_DRAG,
+  multiPollMs: MULTI_POLL_MS,
+  worldToScreenX,
+  worldToScreenY,
+  getDragVector,
+  getTurnState,
+  getPlayerColor,
+  isMultiplayer,
+  isMyTurn,
+  maybeSyncLive,
+  update,
+  updateCamera,
+  drawCourse
+});
 
 function restartHole() {
   if (!game.selectedCategory) return;
@@ -1684,45 +730,32 @@ async function initCategoryFromUrl() {
   return true;
 }
 
-submitAnswerBtn.addEventListener('click', handleAnswerSubmit);
-newQuestionBtn.addEventListener('click', () => {
-  initAudio();
-
-  if (!game.selectedCategory) return;
-  if (isMultiplayer() && !isMyTurn()) {
-    setMessage('Сейчас ход соперника.');
-    return;
-  }
-  adjustScore(-1 * game.selectedCategory.difficulty);
-  playTone({ freq: 310, duration: 0.08, type: 'triangle', gain: 0.04 });
-  game.currentQuestion = null;
-  openQuizModal('Новый вопрос.');
+const { bindUiEvents, initGame } = createBootstrapController({
+  initAudio,
+  submitAnswerBtn,
+  handleAnswerSubmit,
+  newQuestionBtn,
+  game,
+  isMultiplayer,
+  isMyTurn,
+  setMessage,
+  adjustScore,
+  playTone,
+  openQuizModal,
+  answerInputEl,
+  restartButton,
+  restartHole,
+  nextButton,
+  nextHole,
+  canvas,
+  startDrag,
+  moveDrag,
+  endDrag,
+  updateCanvasViewport,
+  initMultiplayerController,
+  initCategoryFromUrl,
+  frame
 });
 
-answerInputEl.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') handleAnswerSubmit();
-});
-
-restartButton.addEventListener('click', restartHole);
-nextButton.addEventListener('click', nextHole);
-
-canvas.addEventListener('pointerdown', startDrag);
-canvas.addEventListener('pointermove', moveDrag);
-canvas.addEventListener('pointerup', endDrag);
-canvas.addEventListener('pointercancel', endDrag);
-
-window.addEventListener('pointerdown', initAudio, { once: true });
-window.addEventListener('keydown', initAudio, { once: true });
-window.addEventListener('resize', updateCanvasViewport);
-window.addEventListener('orientationchange', updateCanvasViewport);
-
-async function initGame() {
-  initMultiplayerController();
-  updateCanvasViewport();
-  const ok = await initCategoryFromUrl();
-  if (ok) {
-    requestAnimationFrame(frame);
-  }
-}
-
+bindUiEvents();
 initGame();

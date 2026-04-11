@@ -696,7 +696,7 @@ function handleHazardDeath(textWithLife, textNoLife) {
         endTurnAndSync('Ход завершён после препятствия.');
       }
     }
-    // Don't open modal here - let player see hearts decrease and continue
+    openQuizModal(`${textWithLife} Осталось жизней: ${game.lives}.`);
     return;
   }
 

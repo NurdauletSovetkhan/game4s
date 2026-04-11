@@ -1,0 +1,113 @@
+Metadata-Version: 2.4
+Name: game4s-python
+Version: 0.1.0
+Summary: Python rewrite of game4s with pygame client and FastAPI multiplayer API
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: redis>=5.0.0
+Requires-Dist: pygame>=2.6.0
+Requires-Dist: httpx>=0.27.0
+
+# game4s на Python
+
+Полный Python-порт проекта с сохранением идеи и механик:
+
+- 2D мини-гольф по платформам с физикой мяча
+- математический квиз как gate перед ударом
+- чекпоинты, вода/шипы, очки, жизни, пар
+- 1v1 комнаты с передачей хода и синхронизацией состояния
+
+## Архитектура
+
+- `game4s_py/shared/game_data.py`
+  - мир, категории, генерация вопросов, генерация 3 лунок на категорию
+  - константы физики и парсинг ответов
+- `game4s_py/server/main.py`
+  - FastAPI API: `create/join/state/update`
+  - совместимая логика ревизий и передачи хода
+- `game4s_py/server/storage.py`
+  - Redis storage (если есть `REDIS_URL`)
+  - fallback на in-memory для локальной разработки
+- `game4s_py/client/main.py`
+  - pygame клиент с рендером, вводом, физикой и квизом
+  - опциональная синхронизация с API
+
+## Игровая логика (перенесено)
+
+- Удар открывается только после верного ответа в квизе.
+- В мультиплеере после верного ответа игрок получает 2 удара.
+- При слабом drag удар не выполняется.
+- После остановки мяча сохраняется чекпоинт.
+- Попадание в воду/шипы: респавн на чекпоинте и штраф.
+- В одиночном режиме штраф снимает жизни; при 0 жизней снова нужен квиз.
+- При попадании в лунку начисляется бонус за результат относительно par.
+- В мультиплеере ход передаётся сопернику, когда удары закончились.
+
+## Запуск
+
+Из папки `python_port`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Если запускаешь из корня репозитория `game4s`, используй:
+
+```bash
+python -m pip install -e python_port
+```
+
+### API сервер
+
+```bash
+uvicorn game4s_py.server.main:app --reload --port 8000
+```
+
+### Одиночная игра
+
+```bash
+python -m game4s_py.client.main --category arith --name "Игрок"
+```
+
+Альтернатива (из корня репозитория, без `-m`):
+
+```bash
+python python_port/game4s_py/client/main.py
+```
+
+По умолчанию клиент открывает меню запуска (выбор имени, категории, solo/multi, room, API).
+
+- Навигация: `↑/↓`
+- Переключение опций: `←/→`
+- Старт: `Enter` на пункте `Старт`
+- Выход из меню: `Esc`
+
+Если нужно стартовать сразу без меню:
+
+```bash
+python -m game4s_py.client.main --no-menu --category arith --name "Игрок"
+```
+
+### Мультиплеер (локально)
+
+Хост (создать комнату):
+
+```bash
+python -m game4s_py.client.main --multi --name "Host" --category arith --api http://127.0.0.1:8000
+```
+
+Подключение к комнате (второй клиент):
+
+```bash
+python -m game4s_py.client.main --multi --room ROOMCODE --name "Guest" --category arith --api http://127.0.0.1:8000
+```
+
+## Что можно улучшить дальше
+
+- более точная визуальная копия web-рендера
+- предсказание/интерполяция соперника для более плавного 1v1
+- сохранение прогресса в БД

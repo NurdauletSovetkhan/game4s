@@ -684,7 +684,8 @@ function handleHazardDeath(textWithLife, textNoLife) {
   if (game.lives > 0) {
     addLives(-1);
     resetBallToCheckpoint();
-    game.shotUnlocked = isMultiplayer() ? game.shotsRemaining > 0 : true;
+    // game.shotUnlocked = isMultiplayer() ? game.shotsRemaining > 0 : true;
+    game.shotUnlocked = false; // Всегда требуем новый вопрос после смерти
     playHazardSound();
     setMessage(`${textWithLife} Осталось жизней: ${game.lives}.`);
     if (isMultiplayer()) {

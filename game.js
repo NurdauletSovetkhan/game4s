@@ -540,15 +540,24 @@ function closeQuizModal() {
 
 function onCorrectAnswer() {
   const reward = 8 * game.selectedCategory.difficulty;
+  let lifeGain = 1;
   adjustScore(reward);
-  addLives(2);
-  game.shotUnlocked = true;
   if (isMultiplayer()) {
     game.shotsRemaining = 2;
+    lifeGain = 2;
+    addLives(2);
+  } else {
+    addLives(1);
   }
+  game.shotUnlocked = true;
   closeQuizModal();
   playCorrectSound();
-  setMessage(`Верно! Удар открыт (+${reward} очков, +2 жизни). Осталось ударов: ${game.shotsRemaining || 1}.`);
+
+  if (isMultiplayer()) {
+    setMessage(`Верно! Удар открыт (+${reward} очков, +${lifeGain} жизни). Осталось ударов: ${game.shotsRemaining}.`);
+  } else {
+    setMessage(`Верно! Удар открыт (+${reward} очков, +${lifeGain} жизнь).`);
+  }
 
   if (isMultiplayer()) {
     saveActiveTurnState();

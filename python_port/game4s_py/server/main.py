@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,10 +10,19 @@ from game4s_py.server.service import new_room, next_turn_player, normalize_name,
 from game4s_py.server.storage import RoomStorage
 
 
+def _cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "*").strip()
+    if not raw:
+        return ["*"]
+    if raw == "*":
+        return ["*"]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 app = FastAPI(title="game4s-python-api", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

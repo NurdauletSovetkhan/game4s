@@ -56,6 +56,70 @@ python -m pip install -e python_port
 uvicorn game4s_py.server.main:app --reload --port 8000
 ```
 
+### Публикация API через Cloudflare Tunnel (Debian 13)
+
+Ниже вариант без открытия входящих портов на домашнем роутере и без раскрытия origin IP.
+
+1) Запусти API локально на сервере (только loopback):
+
+```bash
+uvicorn game4s_py.server.main:app --host 127.0.0.1 --port 8000
+```
+
+2) В Cloudflare Zero Trust создай/используй tunnel и привяжи hostname (например, `api.<твой-домен>`).
+
+На сервере (если tunnel уже есть):
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo cloudflared tunnel token <TUNNEL_ID_OR_NAME> > /tmp/cloudflared-token.txt
+sudo cloudflared service install "$(cat /tmp/cloudflared-token.txt)"
+rm /tmp/cloudflared-token.txt
+```
+
+3) Настрой ingress в `/etc/cloudflared/config.yml`:
+
+```yaml
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: api.<твой-домен>
+    service: http://127.0.0.1:8000
+  - service: http_status:404
+```
+
+4) Применить и проверить:
+
+```bash
+sudo systemctl enable --now cloudflared
+sudo systemctl restart cloudflared
+sudo systemctl status cloudflared --no-pager
+curl -i https://api.<твой-домен>/health
+```
+
+5) В клиенте укажи API:
+
+```bash
+python -m game4s_py.client.main --multi --api https://api.<твой-домен>
+```
+
+6) CORS для продакшна (не оставляй `*`):
+
+API читает переменную `CORS_ALLOW_ORIGINS` (через запятую).
+
+Пример:
+
+```bash
+export CORS_ALLOW_ORIGINS="https://<твой-сайт>,https://api.<твой-домен>"
+uvicorn game4s_py.server.main:app --host 127.0.0.1 --port 8000
+```
+
+Рекомендации:
+- не открывай `8000` наружу на роутере;
+- для API-роута в Cloudflare включи rate limiting и WAF правила;
+- если нужен только приватный доступ, вместо публичного hostname используй Cloudflare Access policy.
+
 ### Одиночная игра
 
 ```bash

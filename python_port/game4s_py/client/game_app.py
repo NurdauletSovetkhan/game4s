@@ -88,6 +88,7 @@ class GameApp:
         self.last_poll_ms = 0
         self.turn_pass_pending = False
         self.awaiting_turn_end = False
+        self.waiting_for_opponent = False
 
         self.load_level(0)
         self.setup_multiplayer()
@@ -102,6 +103,7 @@ class GameApp:
     def setup_multiplayer(self) -> None:
         if not self.multiplayer.enabled:
             return
+        creating_room = not bool(self.multiplayer.room_code)
         try:
             if self.multiplayer.room_code:
                 data = self.api.join_room(self.multiplayer.room_code, self.player_name)
@@ -125,10 +127,19 @@ class GameApp:
         if isinstance(room, dict) and room.get("snapshot"):
             self.apply_snapshot(room.get("snapshot") or {})
 
+        if creating_room and len(self.multiplayer_players) < 2:
+            self.waiting_for_opponent = True
+            self.quiz_open = False
+            self.shot_unlocked = False
+            self.set_message(f"Комната: {self.multiplayer.room_code}. Ожидание соперника...")
+        else:
+            self.waiting_for_opponent = False
+
         if self.multiplayer.turn_player_id:
             self._load_turn_state(self.multiplayer.turn_player_id)
 
-        self.set_message(f"Комната: {self.multiplayer.room_code}")
+        if not self.waiting_for_opponent:
+            self.set_message(f"Комната: {self.multiplayer.room_code}")
 
     def _default_player_state(self) -> dict[str, Any]:
         return {
@@ -618,6 +629,12 @@ class GameApp:
             room = self.api.state_poll()
             self.multiplayer.turn_player_id = room.get("turnPlayerId") or self.multiplayer.turn_player_id
             self.multiplayer_players = list(room.get("players") or self.multiplayer_players)
+            if self.waiting_for_opponent:
+                if len(self.multiplayer_players) < 2:
+                    self.set_message(f"Комната: {self.multiplayer.room_code}. Ожидание соперника...")
+                    return
+                self.waiting_for_opponent = False
+                self.set_message("Соперник подключился. Можно начинать!")
             became_my_turn = (
                 previous_turn_id != self.multiplayer.player_id
                 and self.multiplayer.turn_player_id == self.multiplayer.player_id
@@ -641,6 +658,8 @@ class GameApp:
 
     def update(self, dt: float) -> None:
         if self.won:
+            return
+        if self.waiting_for_opponent:
             return
         if self.multiplayer.enabled and not self.is_my_turn():
             return
@@ -810,6 +829,21 @@ class GameApp:
         if self.multiplayer.enabled:
             turn_text = "твой" if self.is_my_turn() else "соперника"
             self.screen.blit(self.text.render(self.small, f"Комната {self.multiplayer.room_code} | Ход: {turn_text}", (15, 15, 15)), (12, 56))
+
+        if self.waiting_for_opponent and self.multiplayer.enabled:
+            panel = pygame.Rect(max(120, sw // 2 - 480), max(160, sh // 2 - 170), min(960, sw - 240), 300)
+            pygame.draw.rect(self.screen, (255, 255, 255), panel, border_radius=16)
+            pygame.draw.rect(self.screen, (24, 38, 58), panel, width=3, border_radius=16)
+
+            title = self.text.render(self.font, "Ожидание соперника", (20, 30, 45))
+            room_label = self.text.render(self.small, "Код комнаты:", (65, 75, 90))
+            room_value = self.text.render(self.text.make_font(int(54 * self.text_scale)), self.multiplayer.room_code, (20, 70, 42))
+            hint = self.text.render(self.small, "Отправь код другу. Игра начнётся после подключения.", (75, 80, 95))
+
+            self.screen.blit(title, (panel.x + (panel.w - title.get_width()) // 2, panel.y + 28))
+            self.screen.blit(room_label, (panel.x + (panel.w - room_label.get_width()) // 2, panel.y + 96))
+            self.screen.blit(room_value, (panel.x + (panel.w - room_value.get_width()) // 2, panel.y + 130))
+            self.screen.blit(hint, (panel.x + (panel.w - hint.get_width()) // 2, panel.y + 234))
 
         if self.quiz_open and self.current_question:
             panel = pygame.Rect(145, 420, 900, 190)

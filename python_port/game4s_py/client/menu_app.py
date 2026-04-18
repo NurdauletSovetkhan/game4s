@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from game4s_py.shared.game_data import CATEGORY_DEFS
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MENU_BG_PATH = PROJECT_ROOT / "background.png"
+DEFAULT_API_BASE = os.getenv("GAME4S_API_BASE", "http://127.0.0.1:8000")
 
 
 class MenuApp:
@@ -28,6 +30,7 @@ class MenuApp:
         self.font = self.text.make_font(34)
         self.small = self.text.make_font(24)
         self.menu_background = self._load_menu_background()
+        self.api_base = (default_api or DEFAULT_API_BASE).strip() or DEFAULT_API_BASE
 
         categories = [c.id for c in CATEGORY_DEFS]
         self.values: dict[str, Any] = {
@@ -35,7 +38,6 @@ class MenuApp:
             "category": default_category if default_category in categories else categories[0],
             "mode": "multi" if default_multi else "solo",
             "room": default_room.upper(),
-            "api": default_api,
             "text_scale": 1.35,
             "sound_volume": 0.7,
             "shot_power": 1.0,
@@ -47,7 +49,6 @@ class MenuApp:
             "category",
             "mode",
             "room",
-            "api",
             "text_scale",
             "sound_volume",
             "shot_power",
@@ -81,8 +82,6 @@ class MenuApp:
             return f"Режим: {mode_label}"
         if field == "room":
             return f"Код комнаты: {self.values['room'] or '(пусто — создать новую)'}"
-        if field == "api":
-            return f"API: {self.values['api']}"
         if field == "text_scale":
             return f"Размер текста UI: {self.values['text_scale']:.2f}x"
         if field == "sound_volume":
@@ -132,7 +131,7 @@ class MenuApp:
         category = self.values["category"]
         multiplayer = self.values["mode"] == "multi"
         room = self.values["room"].strip().upper()
-        api = self.values["api"].strip() or "http://127.0.0.1:8000"
+        api = self.api_base
 
         if multiplayer and not api.startswith("http"):
             self.error = "API должен начинаться с http:// или https://"
@@ -157,7 +156,7 @@ class MenuApp:
 
     def handle_text_input(self, event: pygame.event.Event) -> None:
         field = self.fields[self.index]
-        if field not in {"name", "room", "api"}:
+        if field not in {"name", "room"}:
             return
         if event.key == pygame.K_BACKSPACE:
             self.values[field] = self.values[field][:-1]
@@ -251,10 +250,10 @@ class MenuApp:
             self.screen.blit(note_surface, ((sw - note_surface.get_width()) // 2, footer_y))
         if self.values["mode"] == "multi" and self.values["room"].strip():
             host_note = self.text.render(self.small, "При подключении используются gameplay-настройки хоста", (90, 96, 108))
-            self.screen.blit(host_note, ((sw - host_note.get_width()) // 2, footer_y))
+            self.screen.blit(host_note, ((sw - host_note.get_width()) // 2, footer_y + 22))
         if self.error:
             err_surface = self.text.render(self.small, self.error, (170, 28, 28))
-            self.screen.blit(err_surface, ((sw - err_surface.get_width()) // 2, footer_y + 22))
+            self.screen.blit(err_surface, ((sw - err_surface.get_width()) // 2, footer_y + 44))
 
         pygame.display.flip()
 

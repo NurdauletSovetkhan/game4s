@@ -168,6 +168,10 @@ python python_port/game4s_py/client/main.py
 
 По умолчанию клиент открывает меню запуска (выбор имени, категории, solo/multi, room, API).
 
+В мультиплеере при создании новой комнаты игра показывает крупный код комнаты и ждёт подключения второго игрока. После подключения соперника игра продолжается автоматически.
+
+Поле API в меню скрыто: endpoint берётся из `--api` или `GAME4S_API_BASE`.
+
 В меню также можно настроить:
 
 - размер текста интерфейса
@@ -199,6 +203,13 @@ python -m game4s_py.client.main --multi --name "Host" --category arith --api htt
 
 ```bash
 python -m game4s_py.client.main --multi --room ROOMCODE --name "Guest" --category arith --api http://127.0.0.1:8000
+```
+
+Можно задать API по умолчанию через переменную окружения (чтобы не хардкодить домен в коде/командах):
+
+```bash
+export GAME4S_API_BASE="https://api.sovetkhan.kz"
+python -m game4s_py.client.main --multi --name "Host" --category arith
 ```
 
 Важно: при подключении к существующей комнате используются **gameplay-настройки хоста** (сила удара, гравитация, отскок). Локальные UI-настройки (размер текста, громкость) остаются у каждого игрока своими.

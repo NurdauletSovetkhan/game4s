@@ -15,13 +15,16 @@ from game4s_py.client.network import GameplaySettings, MultiplayerState
 from game4s_py.shared.game_data import CATEGORY_DEFS
 
 
+DEFAULT_API_BASE = os.getenv("GAME4S_API_BASE", "http://127.0.0.1:8000")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="game4s pygame client")
     parser.add_argument("--category", default="arith", choices=[c.id for c in CATEGORY_DEFS])
     parser.add_argument("--name", default="Игрок")
     parser.add_argument("--multi", action="store_true")
     parser.add_argument("--room", default="")
-    parser.add_argument("--api", default="http://127.0.0.1:8000")
+    parser.add_argument("--api", default=DEFAULT_API_BASE)
     parser.add_argument("--no-menu", action="store_true", help="Skip launch menu and start immediately")
     args = parser.parse_args()
 

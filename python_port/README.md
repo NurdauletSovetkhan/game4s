@@ -120,6 +120,40 @@ uvicorn game4s_py.server.main:app --host 127.0.0.1 --port 8000
 - для API-роута в Cloudflare включи rate limiting и WAF правила;
 - если нужен только приватный доступ, вместо публичного hostname используй Cloudflare Access policy.
 
+### API в Docker (рекомендуется для always-on)
+
+Если не хочешь держать `uvicorn` вручную, запускай API как контейнер с авто-рестартом.
+
+Из `python_port`:
+
+```bash
+docker compose -f docker-compose.api.yml up -d --build
+```
+
+Проверка:
+
+```bash
+curl -i http://127.0.0.1:18080/health
+```
+
+Логи:
+
+```bash
+docker compose -f docker-compose.api.yml logs -f
+```
+
+Обновление после `git pull`:
+
+```bash
+docker compose -f docker-compose.api.yml up -d --build
+```
+
+Остановка:
+
+```bash
+docker compose -f docker-compose.api.yml down
+```
+
 ### Одиночная игра
 
 ```bash

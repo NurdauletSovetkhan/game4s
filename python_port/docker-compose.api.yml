@@ -1,0 +1,12 @@
+services:
+  game4s-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: game4s-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18080:8000"
+    environment:
+      CORS_ALLOW_ORIGINS: "https://sovetkhan.kz,https://api.sovetkhan.kz"
+      REDIS_URL: ""

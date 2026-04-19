@@ -55,4 +55,5 @@ def new_room(
         players=[Player(id=player_id, name=name)],
         gameplaySettings=gameplay_settings or GameplaySettings(),
         snapshot=None,
+        actionSeqByPlayer={player_id: 0},
     )

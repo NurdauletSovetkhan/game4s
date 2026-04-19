@@ -151,7 +151,12 @@ def _build_diagonal_level(
     water_shift: int,
     par: int,
 ) -> Level:
-    platforms: list[Rect] = []
+    start_platform_width = clamp(width_base + 92, 240, 390)
+    start_platform_x = clamp(start_x - start_platform_width * 0.5, 20, WORLD_WIDTH - start_platform_width - 20)
+    start_platform_y = clamp(start_y + 10, 90, WORLD_HEIGHT - 120)
+    platforms: list[Rect] = [
+        Rect(round(start_platform_x), round(start_platform_y), round(start_platform_width), 20)
+    ]
     for index in range(segments):
         t = 0.0 if segments == 1 else index / (segments - 1)
         center_x = lerp(start_x + 50, hole_x - 70, t) + math.sin(index * 1.14 + phase) * zigzag * (1 - t * 0.35)

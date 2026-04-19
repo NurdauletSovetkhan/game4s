@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import math
 from typing import Any
 
@@ -86,9 +87,18 @@ class GameApp:
         self.multiplayer_players: list[dict[str, str]] = []
         self.player_states: dict[str, dict[str, Any]] = {}
         self.last_poll_ms = 0
+        self.poll_interval_ms = 140
         self.turn_pass_pending = False
         self.awaiting_turn_end = False
         self.waiting_for_opponent = False
+        self.shot_commit_pending = False
+        self.network_status = "ok"
+        self.network_error = ""
+        self.sync_inflight = False
+        self.pending_sync: dict[str, Any] | None = None
+        self.sync_future: Future[dict[str, Any]] | None = None
+        self.poll_future: Future[dict[str, Any]] | None = None
+        self.net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="game4s-net")
 
         self.load_level(0)
         self.setup_multiplayer()
@@ -227,6 +237,15 @@ class GameApp:
     def is_my_turn(self) -> bool:
         return not self.multiplayer.enabled or self.multiplayer.turn_player_id == self.multiplayer.player_id
 
+    def can_interact_now(self) -> bool:
+        if not self.multiplayer.enabled:
+            return True
+        if not self.is_my_turn():
+            return False
+        if self.turn_pass_pending or self.awaiting_turn_end or self.shot_commit_pending:
+            return False
+        return True
+
     def set_message(self, text: str) -> None:
         self.message = text
 
@@ -280,7 +299,7 @@ class GameApp:
     def submit_answer(self) -> None:
         if not self.current_question:
             return
-        if self.multiplayer.enabled and not self.is_my_turn():
+        if self.multiplayer.enabled and not self.can_interact_now():
             self.set_message("Сейчас ход соперника.")
             return
         value = parse_answer_input(self.answer_buffer)
@@ -421,7 +440,7 @@ class GameApp:
     def begin_drag(self, mx: float, my: float) -> None:
         if self.quiz_open or not self.shot_unlocked or self.won:
             return
-        if self.multiplayer.enabled and not self.is_my_turn():
+        if self.multiplayer.enabled and not self.can_interact_now():
             return
         if math.hypot(self.ball.vx, self.ball.vy) > STOP_SPEED:
             return
@@ -440,6 +459,10 @@ class GameApp:
 
     def end_drag(self) -> None:
         if not self.dragging:
+            return
+        if self.multiplayer.enabled and not self.can_interact_now():
+            self.dragging = False
+            self.drag_pos = None
             return
         self.dragging = False
         if not self.drag_pos:
@@ -464,6 +487,7 @@ class GameApp:
         if self.multiplayer.enabled:
             self.shots_remaining = max(0, self.shots_remaining - 1)
             self.awaiting_turn_end = self.shots_remaining <= 0
+            self.shot_commit_pending = True
             self.set_message(f"Удар! Осталось ударов: {self.shots_remaining}.")
         else:
             self.set_message("Удар!")
@@ -603,30 +627,83 @@ class GameApp:
     def sync_room(self, pass_turn: bool, allow_any_player: bool = False) -> None:
         if not self.multiplayer.enabled:
             return
-        try:
-            room = self.api.update(self.serialize_snapshot(), pass_turn=pass_turn, allow_any_player=allow_any_player)
-            self.multiplayer.turn_player_id = room.get("turnPlayerId") or self.multiplayer.turn_player_id
-        except Exception as error:
-            self.set_message(f"Сеть: {error}")
+        snapshot = self.serialize_snapshot()
+        if self.pending_sync:
+            self.pending_sync["snapshot"] = snapshot
+            self.pending_sync["pass_turn"] = bool(self.pending_sync.get("pass_turn") or pass_turn)
+            self.pending_sync["allow_any_player"] = bool(self.pending_sync.get("allow_any_player") or allow_any_player)
+        else:
+            self.pending_sync = {
+                "snapshot": snapshot,
+                "pass_turn": pass_turn,
+                "allow_any_player": allow_any_player,
+            }
+        self._launch_sync_if_idle()
 
-    def end_turn(self, text: str) -> None:
-        if not self.multiplayer.enabled or self.turn_pass_pending:
+    def _launch_sync_if_idle(self) -> None:
+        if not self.multiplayer.enabled or not self.pending_sync:
             return
-        self.turn_pass_pending = True
-        self.awaiting_turn_end = False
-        self.shot_unlocked = False
-        self.shots_remaining = 0
-        self.set_message(text)
-        self.sync_room(pass_turn=True)
-        self.turn_pass_pending = False
+        if self.sync_future and not self.sync_future.done():
+            return
+        request = self.pending_sync
+        self.pending_sync = None
+        self.sync_inflight = True
+        self.network_status = "sync"
+        self.network_error = ""
+        self.sync_future = self.net_executor.submit(
+            self.api.update,
+            request["snapshot"],
+            request["pass_turn"],
+            request["allow_any_player"],
+        )
 
-    def poll_room(self, now_ms: int) -> None:
-        if not self.multiplayer.enabled or now_ms - self.last_poll_ms < 100:
+    def _consume_sync_result(self) -> None:
+        if not self.sync_future or not self.sync_future.done():
+            return
+        future = self.sync_future
+        self.sync_future = None
+        self.sync_inflight = False
+        try:
+            room = future.result()
+            self.multiplayer.turn_player_id = room.get("turnPlayerId") or self.multiplayer.turn_player_id
+            remote = room.get("snapshot")
+            if remote:
+                preserve_local_turn = self.is_my_turn()
+                self.apply_snapshot(remote, preserve_local_turn=preserve_local_turn)
+            self.network_status = "ok"
+            self.network_error = ""
+        except Exception as error:
+            self.network_status = "error"
+            self.network_error = str(error)
+            self.set_message(f"Сеть: {error}")
+        finally:
+            self.shot_commit_pending = False
+            if self.turn_pass_pending:
+                self.turn_pass_pending = False
+            self._launch_sync_if_idle()
+
+    def _launch_poll_if_due(self, now_ms: int) -> None:
+        if not self.multiplayer.enabled:
+            return
+        if self.turn_pass_pending or self.sync_inflight or self.pending_sync:
+            return
+        if self.poll_future and not self.poll_future.done():
+            return
+        if now_ms - self.last_poll_ms < self.poll_interval_ms:
             return
         self.last_poll_ms = now_ms
+        self.poll_future = self.net_executor.submit(self.api.state_poll)
+
+    def _consume_poll_result(self) -> None:
+        if not self.poll_future or not self.poll_future.done():
+            return
+        future = self.poll_future
+        self.poll_future = None
         try:
             previous_turn_id = self.multiplayer.turn_player_id
-            room = self.api.state_poll()
+            room = future.result()
+            self.network_status = "ok"
+            self.network_error = ""
             self.multiplayer.turn_player_id = room.get("turnPlayerId") or self.multiplayer.turn_player_id
             self.multiplayer_players = list(room.get("players") or self.multiplayer_players)
             if self.waiting_for_opponent:
@@ -641,9 +718,10 @@ class GameApp:
             )
             remote = room.get("snapshot")
             if remote:
-                preserve_local_turn = self.is_my_turn() and not became_my_turn
+                preserve_local_turn = self.is_my_turn() and not became_my_turn and not self.sync_inflight
                 self.apply_snapshot(remote, preserve_local_turn=preserve_local_turn)
             if not self.is_my_turn():
+                self.shot_commit_pending = False
                 self.quiz_open = False
                 self.set_message("Ход соперника...")
             elif self.is_my_turn() and not self.shot_unlocked and math.hypot(self.ball.vx, self.ball.vy) <= STOP_SPEED:
@@ -654,7 +732,26 @@ class GameApp:
                 elif not self.quiz_open:
                     self.open_quiz("Твой ход. Реши задачу и сделай два удара.")
         except Exception as error:
+            self.network_status = "error"
+            self.network_error = str(error)
             self.set_message(f"Сеть: {error}")
+
+    def end_turn(self, text: str) -> None:
+        if not self.multiplayer.enabled or self.turn_pass_pending:
+            return
+        self.turn_pass_pending = True
+        self.shot_commit_pending = False
+        self.awaiting_turn_end = False
+        self.shot_unlocked = False
+        self.shots_remaining = 0
+        self.set_message(text)
+        self.sync_room(pass_turn=True)
+
+    def poll_room(self, now_ms: int) -> None:
+        self._consume_sync_result()
+        self._consume_poll_result()
+        self._launch_sync_if_idle()
+        self._launch_poll_if_due(now_ms)
 
     def update(self, dt: float) -> None:
         if self.won:
@@ -828,7 +925,20 @@ class GameApp:
         self.screen.blit(self.text.render(self.small, self.message, (15, 15, 15)), (12, 34))
         if self.multiplayer.enabled:
             turn_text = "твой" if self.is_my_turn() else "соперника"
-            self.screen.blit(self.text.render(self.small, f"Комната {self.multiplayer.room_code} | Ход: {turn_text}", (15, 15, 15)), (12, 56))
+            network_text = "ok"
+            if self.network_status == "sync":
+                network_text = "sync"
+            elif self.network_status == "error":
+                network_text = "error"
+            rtt_text = f"{self.api.avg_rtt_ms:.0f}ms" if self.api.avg_rtt_ms > 0 else "-"
+            self.screen.blit(
+                self.text.render(
+                    self.small,
+                    f"Комната {self.multiplayer.room_code} | Ход: {turn_text} | Ping {rtt_text} | Net: {network_text}",
+                    (15, 15, 15),
+                ),
+                (12, 56),
+            )
 
         if self.waiting_for_opponent and self.multiplayer.enabled:
             panel = pygame.Rect(max(120, sw // 2 - 480), max(160, sh // 2 - 170), min(960, sw - 240), 300)
@@ -889,13 +999,15 @@ class GameApp:
                 self.load_level(min(self.level_index + 1, len(self.levels) - 1))
 
     def run(self) -> None:
-        while self.running:
-            dt = self.clock.tick(60) / 1000
-            now_ms = pygame.time.get_ticks()
-            for event in pygame.event.get():
-                self.handle_event(event)
-            self.poll_room(now_ms)
-            self.update(dt)
-            self.draw()
-
-        pygame.quit()
+        try:
+            while self.running:
+                dt = self.clock.tick(60) / 1000
+                now_ms = pygame.time.get_ticks()
+                for event in pygame.event.get():
+                    self.handle_event(event)
+                self.poll_room(now_ms)
+                self.update(dt)
+                self.draw()
+        finally:
+            self.net_executor.shutdown(wait=False)
+            pygame.quit()

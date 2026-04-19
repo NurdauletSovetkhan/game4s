@@ -31,6 +31,27 @@ app.add_middleware(
 storage = RoomStorage()
 
 
+def _merge_snapshot_for_player(
+    current_snapshot: dict | None,
+    incoming_snapshot: dict,
+    player_id: str,
+) -> dict:
+    merged = dict(current_snapshot or {})
+    merged.update(incoming_snapshot)
+
+    incoming_player_states = incoming_snapshot.get("playerStates")
+    if not isinstance(incoming_player_states, dict):
+        return merged
+
+    current_player_states = (current_snapshot or {}).get("playerStates")
+    base_states = dict(current_player_states) if isinstance(current_player_states, dict) else {}
+    own_state = incoming_player_states.get(player_id)
+    if own_state is not None:
+        base_states[player_id] = own_state
+    merged["playerStates"] = base_states
+    return merged
+
+
 @app.get("/health")
 async def health() -> dict[str, bool]:
     return {"ok": True}
@@ -94,6 +115,7 @@ async def join_room(payload: JoinRoomRequest) -> dict:
 
     player_id = random_player_id()
     room.players.append({"id": player_id, "name": normalize_name(payload.name)})
+    room.actionSeqByPlayer[player_id] = 0
     room.status = "active"
     room.updatedAt = now_iso()
     room.revision = (room.revision or 1) + 1
@@ -140,6 +162,12 @@ async def update_room(payload: UpdateRoomRequest) -> dict:
     if not any(p.id == player_id for p in room.players):
         raise HTTPException(status_code=403, detail="Player not in this room")
 
+    room.actionSeqByPlayer = dict(room.actionSeqByPlayer or {})
+    last_action_seq = int(room.actionSeqByPlayer.get(player_id, 0))
+    incoming_action_seq = int(payload.actionSeq or 0)
+    if incoming_action_seq > 0 and incoming_action_seq <= last_action_seq:
+        return {"ok": True, "room": room.model_dump()}
+
     if not payload.allowAnyPlayer and room.turnPlayerId and room.turnPlayerId != player_id:
         raise HTTPException(status_code=409, detail="Not your turn")
 
@@ -152,7 +180,14 @@ async def update_room(payload: UpdateRoomRequest) -> dict:
         }
 
     if payload.snapshot is not None:
-        room.snapshot = payload.snapshot
+        incoming_snapshot = payload.snapshot if isinstance(payload.snapshot, dict) else {}
+        if payload.allowAnyPlayer:
+            room.snapshot = incoming_snapshot
+        else:
+            room.snapshot = _merge_snapshot_for_player(room.snapshot, incoming_snapshot, player_id)
+
+    if incoming_action_seq > 0:
+        room.actionSeqByPlayer[player_id] = incoming_action_seq
 
     if payload.passTurn:
         room.turnPlayerId = next_turn_player(room, room.turnPlayerId or player_id)

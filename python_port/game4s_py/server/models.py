@@ -26,6 +26,7 @@ class Room(BaseModel):
     players: list[Player]
     gameplaySettings: GameplaySettings = Field(default_factory=GameplaySettings)
     snapshot: dict[str, Any] | None = None
+    actionSeqByPlayer: dict[str, int] = Field(default_factory=dict)
 
 
 class CreateRoomRequest(BaseModel):
@@ -45,6 +46,7 @@ class UpdateRoomRequest(BaseModel):
     allowAnyPlayer: bool = False
     passTurn: bool = False
     baseRevision: int = 0
+    actionSeq: int = 0
     snapshot: dict[str, Any] | None = None
 
 

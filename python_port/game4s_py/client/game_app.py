@@ -599,7 +599,7 @@ class GameApp:
         self.score = int(snap.get("score", self.score))
         self.lives = int(snap.get("lives", self.lives))
         self.won = bool(snap.get("won", self.won))
-        if not preserve_local_turn:
+        if not self.multiplayer.enabled and not preserve_local_turn:
             ball = snap.get("ball") or {}
             self.ball.x = float(ball.get("x", self.ball.x))
             self.ball.y = float(ball.get("y", self.ball.y))
@@ -621,7 +621,7 @@ class GameApp:
                         incoming_states[self.multiplayer.player_id] = local_state
                 self.player_states = incoming_states
                 self._ensure_multiplayer_player_states()
-                if self.multiplayer.turn_player_id and not preserve_local_turn:
+                if self.multiplayer.turn_player_id:
                     self._load_turn_state(self.multiplayer.turn_player_id)
 
     def sync_room(self, pass_turn: bool, allow_any_player: bool = False) -> None:
@@ -670,6 +670,9 @@ class GameApp:
             if remote:
                 preserve_local_turn = self.is_my_turn()
                 self.apply_snapshot(remote, preserve_local_turn=preserve_local_turn)
+            if not self.is_my_turn():
+                self.awaiting_turn_end = False
+                self.shot_commit_pending = False
             self.network_status = "ok"
             self.network_error = ""
         except Exception as error:
@@ -716,11 +719,16 @@ class GameApp:
                 previous_turn_id != self.multiplayer.player_id
                 and self.multiplayer.turn_player_id == self.multiplayer.player_id
             )
+            if became_my_turn:
+                self.awaiting_turn_end = False
+                self.shot_commit_pending = False
+                self.turn_pass_pending = False
             remote = room.get("snapshot")
             if remote:
                 preserve_local_turn = self.is_my_turn() and not became_my_turn and not self.sync_inflight
                 self.apply_snapshot(remote, preserve_local_turn=preserve_local_turn)
             if not self.is_my_turn():
+                self.awaiting_turn_end = False
                 self.shot_commit_pending = False
                 self.quiz_open = False
                 self.set_message("Ход соперника...")

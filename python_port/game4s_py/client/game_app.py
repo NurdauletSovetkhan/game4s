@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import math
+from pathlib import Path
 from typing import Any
 
 import pygame
@@ -25,6 +26,10 @@ from game4s_py.shared.game_data import (
     clamp,
     parse_answer_input,
 )
+
+
+PYTHON_PORT_ROOT = Path(__file__).resolve().parents[2]
+BALL_TEXTURE_DIR = PYTHON_PORT_ROOT / "assets" / "balls"
 
 
 class GameApp:
@@ -76,6 +81,7 @@ class GameApp:
         self.just_stopped = False
 
         self.ball = Ball()
+        self.ball_textures: dict[int, pygame.Surface] = self._load_player_ball_textures()
         self.checkpoint = (self.level.start_x, self.level.start_y)
         self.camera_x = 0.0
         self.camera_y = 0.0
@@ -192,6 +198,55 @@ class GameApp:
             "shotsRemaining": 0,
             "justStopped": False,
         }
+
+    def _load_player_ball_textures(self) -> dict[int, pygame.Surface]:
+        textures: dict[int, pygame.Surface] = {}
+        size = max(12, int(self.ball.r * 2))
+        for index in range(1, 5):
+            candidates = [
+                BALL_TEXTURE_DIR / f"player{index}.png",
+                BALL_TEXTURE_DIR / f"ball{index}.png",
+                BALL_TEXTURE_DIR / f"golf_ball_{index}.png",
+            ]
+            for path in candidates:
+                if not path.exists():
+                    continue
+                try:
+                    image = pygame.image.load(str(path)).convert_alpha()
+                    textures[index] = pygame.transform.smoothscale(image, (size, size))
+                    break
+                except Exception:
+                    continue
+        return textures
+
+    def _player_texture_slot(self, player_id: str) -> int:
+        if player_id.startswith("local_"):
+            suffix = player_id.split("_", 1)[1]
+            if suffix.isdigit():
+                return max(1, min(4, int(suffix)))
+        for index, player in enumerate(self.multiplayer_players, start=1):
+            if str(player.get("id") or "") == player_id:
+                return max(1, min(4, index))
+        return 1
+
+    def _draw_player_ball(self, cx: int, cy: int, player_id: str) -> None:
+        slot = self._player_texture_slot(player_id)
+        texture = self.ball_textures.get(slot)
+        if texture is not None:
+            rect = texture.get_rect(center=(cx, cy))
+            self.screen.blit(texture, rect)
+            pygame.draw.circle(self.screen, (35, 35, 35), (cx, cy), int(self.ball.r), width=2)
+            return
+
+        fallback_colors = {
+            1: (252, 229, 106),
+            2: (106, 199, 255),
+            3: (170, 238, 162),
+            4: (252, 178, 219),
+        }
+        color = fallback_colors.get(slot, (252, 229, 106))
+        pygame.draw.circle(self.screen, color, (cx, cy), int(self.ball.r))
+        pygame.draw.circle(self.screen, (45, 45, 45), (cx, cy), int(self.ball.r), width=2)
 
     def _ensure_multiplayer_player_states(self) -> None:
         if not self.multiplayer.enabled:
@@ -1099,8 +1154,10 @@ class GameApp:
         pygame.draw.circle(self.screen, (31, 29, 26), (hx, hy), int(self.level.hole.r))
 
         bx, by = self.world_to_screen(self.ball.x, self.ball.y)
-        pygame.draw.circle(self.screen, (252, 229, 106), (bx, by), int(self.ball.r))
-        pygame.draw.circle(self.screen, (45, 45, 45), (bx, by), int(self.ball.r), width=2)
+        active_player_id = "local_1"
+        if self.multiplayer.enabled and self.multiplayer.turn_player_id:
+            active_player_id = self.multiplayer.turn_player_id
+        self._draw_player_ball(bx, by, active_player_id)
 
         if self.multiplayer.enabled:
             for player in self.multiplayer_players:
@@ -1112,8 +1169,7 @@ class GameApp:
                 if not other_ball:
                     continue
                 ox, oy = self.world_to_screen(float(other_ball.get("x", -9999)), float(other_ball.get("y", -9999)))
-                pygame.draw.circle(self.screen, (106, 199, 255), (ox, oy), int(self.ball.r))
-                pygame.draw.circle(self.screen, (20, 86, 140), (ox, oy), int(self.ball.r), width=2)
+                self._draw_player_ball(ox, oy, pid)
 
         if self.dragging and self.drag_pos:
             dx = self.drag_pos[0] - self.ball.x

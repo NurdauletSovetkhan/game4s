@@ -83,6 +83,9 @@ class GameApp:
         self.multiplayer = multiplayer
         self.api = MultiplayerApi(multiplayer)
         self.player_name = player_name
+        self.hotseat_mode = bool(multiplayer.enabled and multiplayer.local_mode)
+        self.local_turn_order: list[str] = []
+        self.local_player_names: dict[str, str] = {}
         self.remote_snapshot: dict[str, Any] | None = None
         self.multiplayer_players: list[dict[str, str]] = []
         self.player_states: dict[str, dict[str, Any]] = {}
@@ -115,6 +118,27 @@ class GameApp:
 
     def setup_multiplayer(self) -> None:
         if not self.multiplayer.enabled:
+            return
+        if self.hotseat_mode:
+            total = max(2, min(4, int(self.multiplayer.local_players or 2)))
+            self.multiplayer.room_code = f"LOCAL-{total}P"
+            self.multiplayer_players = []
+            self.local_turn_order = []
+            self.local_player_names = {}
+            for index in range(total):
+                pid = f"local_{index + 1}"
+                name = self.player_name if index == 0 else f"Игрок {index + 1}"
+                self.multiplayer_players.append({"id": pid, "name": name})
+                self.local_turn_order.append(pid)
+                self.local_player_names[pid] = name
+            self.multiplayer.player_id = self.local_turn_order[0]
+            self.multiplayer.turn_player_id = self.local_turn_order[0]
+            self._ensure_multiplayer_player_states()
+            self._load_turn_state(self.multiplayer.turn_player_id)
+            self.waiting_for_opponent = False
+            self.quiz_open = False
+            self.shot_unlocked = False
+            self.open_quiz(f"Ход: {self.local_player_names[self.multiplayer.turn_player_id]}. Реши задачу и сделай два удара.")
             return
         creating_room = not bool(self.multiplayer.room_code)
         try:
@@ -188,6 +212,34 @@ class GameApp:
                 return pid
         return ""
 
+    def _active_player_name(self) -> str:
+        if self.hotseat_mode:
+            return self.local_player_names.get(self.multiplayer.turn_player_id, "Игрок")
+        for player in self.multiplayer_players:
+            if player.get("id") == self.multiplayer.player_id:
+                return str(player.get("name") or "Игрок")
+        return self.player_name
+
+    def _advance_local_turn(self) -> None:
+        if not self.hotseat_mode or not self.local_turn_order:
+            return
+        current_id = self.multiplayer.turn_player_id or self.local_turn_order[0]
+        if current_id not in self.local_turn_order:
+            next_index = 0
+        else:
+            next_index = (self.local_turn_order.index(current_id) + 1) % len(self.local_turn_order)
+        next_id = self.local_turn_order[next_index]
+        self.multiplayer.turn_player_id = next_id
+        self.multiplayer.player_id = next_id
+        self.awaiting_turn_end = False
+        self.turn_pass_pending = False
+        self.shot_commit_pending = False
+        self.shot_unlocked = False
+        self.quiz_open = False
+        self._load_turn_state(next_id)
+        if math.hypot(self.ball.vx, self.ball.vy) <= STOP_SPEED:
+            self.open_quiz(f"Ход: {self.local_player_names.get(next_id, 'Игрок')}. Реши задачу и сделай два удара.")
+
     def _save_active_turn_state(self) -> None:
         if not self.multiplayer.enabled:
             return
@@ -245,6 +297,8 @@ class GameApp:
         )
 
     def is_my_turn(self) -> bool:
+        if self.hotseat_mode:
+            return True
         return not self.multiplayer.enabled or self.multiplayer.turn_player_id == self.multiplayer.player_id
 
     def can_interact_now(self) -> bool:
@@ -501,7 +555,7 @@ class GameApp:
         if self.multiplayer.enabled:
             self.shots_remaining = max(0, self.shots_remaining - 1)
             self.awaiting_turn_end = self.shots_remaining <= 0
-            self.shot_commit_pending = True
+            self.shot_commit_pending = not self.hotseat_mode
             self.set_message(f"Удар! Осталось ударов: {self.shots_remaining}.")
         else:
             self.set_message("Удар!")
@@ -698,6 +752,12 @@ class GameApp:
     def sync_room(self, pass_turn: bool, allow_any_player: bool = False, shot_event: dict[str, Any] | None = None) -> None:
         if not self.multiplayer.enabled:
             return
+        if self.hotseat_mode:
+            self._save_active_turn_state()
+            self.shot_commit_pending = False
+            if pass_turn:
+                self._advance_local_turn()
+            return
         snapshot = self.serialize_snapshot(shot_event=shot_event)
         if self.pending_sync:
             self.pending_sync["snapshot"] = snapshot
@@ -818,6 +878,10 @@ class GameApp:
     def end_turn(self, text: str) -> None:
         if not self.multiplayer.enabled or self.turn_pass_pending:
             return
+        if self.hotseat_mode:
+            self.set_message(text)
+            self.sync_room(pass_turn=True)
+            return
         self.turn_pass_pending = True
         self.shot_commit_pending = False
         self.awaiting_turn_end = False
@@ -827,6 +891,8 @@ class GameApp:
         self.sync_room(pass_turn=True)
 
     def poll_room(self, now_ms: int) -> None:
+        if self.hotseat_mode:
+            return
         self._consume_sync_result()
         self._consume_poll_result()
         self._launch_sync_if_idle()
@@ -1037,16 +1103,15 @@ class GameApp:
         pygame.draw.circle(self.screen, (45, 45, 45), (bx, by), int(self.ball.r), width=2)
 
         if self.multiplayer.enabled:
-            opponent_id = ""
             for player in self.multiplayer_players:
                 pid = str(player.get("id") or "")
-                if pid and pid != self.multiplayer.player_id:
-                    opponent_id = pid
-                    break
-            opponent_state = self.player_states.get(opponent_id, {}) if opponent_id else {}
-            opponent_ball = opponent_state.get("ball") or {}
-            if opponent_ball:
-                ox, oy = self.world_to_screen(float(opponent_ball.get("x", -9999)), float(opponent_ball.get("y", -9999)))
+                if not pid or pid == self.multiplayer.turn_player_id:
+                    continue
+                state = self.player_states.get(pid, {})
+                other_ball = state.get("ball") or {}
+                if not other_ball:
+                    continue
+                ox, oy = self.world_to_screen(float(other_ball.get("x", -9999)), float(other_ball.get("y", -9999)))
                 pygame.draw.circle(self.screen, (106, 199, 255), (ox, oy), int(self.ball.r))
                 pygame.draw.circle(self.screen, (20, 86, 140), (ox, oy), int(self.ball.r), width=2)
 
@@ -1088,21 +1153,32 @@ class GameApp:
         self.screen.blit(self.text.render(self.small, hud, (20, 20, 20)), (12, 10))
         self.screen.blit(self.text.render(self.small, self.message, (15, 15, 15)), (12, 34))
         if self.multiplayer.enabled:
-            turn_text = "твой" if self.is_my_turn() else "соперника"
-            network_text = "ok"
-            if self.network_status == "sync":
-                network_text = "sync"
-            elif self.network_status == "error":
-                network_text = "error"
-            rtt_text = f"{self.api.avg_rtt_ms:.0f}ms" if self.api.avg_rtt_ms > 0 else "-"
-            self.screen.blit(
-                self.text.render(
-                    self.small,
-                    f"Комната {self.multiplayer.room_code} | Ход: {turn_text} | Ping {rtt_text} | Net: {network_text}",
-                    (15, 15, 15),
-                ),
-                (12, 56),
-            )
+            if self.hotseat_mode:
+                active_name = self._active_player_name()
+                self.screen.blit(
+                    self.text.render(
+                        self.small,
+                        f"Локальная комната {self.multiplayer.room_code} | Ход: {active_name}",
+                        (15, 15, 15),
+                    ),
+                    (12, 56),
+                )
+            else:
+                turn_text = "твой" if self.is_my_turn() else "соперника"
+                network_text = "ok"
+                if self.network_status == "sync":
+                    network_text = "sync"
+                elif self.network_status == "error":
+                    network_text = "error"
+                rtt_text = f"{self.api.avg_rtt_ms:.0f}ms" if self.api.avg_rtt_ms > 0 else "-"
+                self.screen.blit(
+                    self.text.render(
+                        self.small,
+                        f"Комната {self.multiplayer.room_code} | Ход: {turn_text} | Ping {rtt_text} | Net: {network_text}",
+                        (15, 15, 15),
+                    ),
+                    (12, 56),
+                )
 
         if self.waiting_for_opponent and self.multiplayer.enabled:
             panel = pygame.Rect(max(120, sw // 2 - 480), max(160, sh // 2 - 170), min(960, sw - 240), 300)

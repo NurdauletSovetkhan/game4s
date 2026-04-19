@@ -9,6 +9,8 @@ import httpx
 @dataclass
 class MultiplayerState:
     enabled: bool = False
+    local_mode: bool = False
+    local_players: int = 1
     api_base: str = "http://127.0.0.1:8000"
     room_code: str = ""
     player_id: str = ""

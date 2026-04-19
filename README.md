@@ -7,8 +7,7 @@
 ## Что уже есть в Python версии
 
 - `pygame` клиент: физика мяча, drag-удар, квиз перед ударом, чекпоинты, вода/шипы, пар и очки.
-- `FastAPI` backend: комнаты 1v1 (`create/join/state/update`) с ревизиями состояния.
-- Поддержка `Redis` через `REDIS_URL` и fallback в in-memory storage.
+- Локальная hot-seat комната на одном устройстве: 1–4 игрока, передача хода по кругу.
 
 ## Быстрый старт (Python)
 
@@ -19,16 +18,10 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-Сервер:
-
-```bash
-uvicorn game4s_py.server.main:app --reload --port 8000
-```
-
 Клиент:
 
 ```bash
-python -m game4s_py.client.main --category arith --name "Игрок"
+python -m game4s_py.client.main --players 2 --name "Игрок 1"
 ```
 
 ## Legacy

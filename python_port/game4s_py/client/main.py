@@ -15,27 +15,23 @@ from game4s_py.client.network import GameplaySettings, MultiplayerState
 from game4s_py.shared.game_data import CATEGORY_DEFS
 
 
-DEFAULT_API_BASE = os.getenv("GAME4S_API_BASE", "http://127.0.0.1:8000")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="game4s pygame client")
     parser.add_argument("--category", default="arith", choices=[c.id for c in CATEGORY_DEFS])
     parser.add_argument("--name", default="Игрок")
-    parser.add_argument("--multi", action="store_true")
-    parser.add_argument("--room", default="")
-    parser.add_argument("--api", default=DEFAULT_API_BASE)
+    parser.add_argument("--players", type=int, default=1, choices=[1, 2, 3, 4])
+    parser.add_argument("--multi", action="store_true", help="Compatibility alias: enables 2 local players")
     parser.add_argument("--no-menu", action="store_true", help="Skip launch menu and start immediately")
     args = parser.parse_args()
+
+    cli_players = 2 if args.multi and args.players == 1 else args.players
 
     launch: LaunchConfig | None
     if args.no_menu:
         launch = LaunchConfig(
             category_id=args.category,
             player_name=args.name,
-            multiplayer=args.multi,
-            room_code=args.room,
-            api_base=args.api,
+            local_players=cli_players,
             text_scale=1.35,
             sfx_volume=0.7,
             gameplay_settings=GameplaySettings(),
@@ -44,9 +40,7 @@ def main() -> None:
         menu = MenuApp(
             default_category=args.category,
             default_name=args.name,
-            default_multi=args.multi,
-            default_room=args.room,
-            default_api=args.api,
+            default_players=cli_players,
         )
         launch = menu.run()
 
@@ -56,7 +50,8 @@ def main() -> None:
     if "SDL_VIDEO_CENTERED" not in os.environ:
         os.environ["SDL_VIDEO_CENTERED"] = "1"
 
-    mp = MultiplayerState(enabled=launch.multiplayer, room_code=launch.room_code, api_base=launch.api_base)
+    players = max(1, min(4, int(launch.local_players)))
+    mp = MultiplayerState(enabled=players > 1, local_mode=True, local_players=players)
     app = GameApp(
         launch.category_id,
         mp,

@@ -19,9 +19,7 @@ class Ball:
 class LaunchConfig:
     category_id: str
     player_name: str
-    multiplayer: bool
-    room_code: str
-    api_base: str
+    local_players: int
     text_scale: float
     sfx_volume: float
     gameplay_settings: GameplaySettings

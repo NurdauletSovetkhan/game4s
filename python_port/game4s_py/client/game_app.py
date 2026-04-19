@@ -99,6 +99,9 @@ class GameApp:
         self.sync_future: Future[dict[str, Any]] | None = None
         self.poll_future: Future[dict[str, Any]] | None = None
         self.net_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="game4s-net")
+        self.local_shot_seq = 0
+        self.last_remote_shot_seq: dict[str, int] = {}
+        self.remote_active_shot_player_id = ""
 
         self.load_level(0)
         self.setup_multiplayer()
@@ -177,6 +180,13 @@ class GameApp:
         for player_id in ids:
             if player_id not in self.player_states:
                 self.player_states[player_id] = self._default_player_state()
+
+    def _opponent_id(self) -> str:
+        for player in self.multiplayer_players:
+            pid = str(player.get("id") or "")
+            if pid and pid != self.multiplayer.player_id:
+                return pid
+        return ""
 
     def _save_active_turn_state(self) -> None:
         if not self.multiplayer.enabled:
@@ -478,8 +488,12 @@ class GameApp:
 
         dist = min(dist, MAX_DRAG)
         power = dist / MAX_DRAG
-        self.ball.vx = -(dx / (dist or 1)) * self.shot_speed * power
-        self.ball.vy = -(dy / (dist or 1)) * self.shot_speed * power
+        launch_x = float(self.ball.x)
+        launch_y = float(self.ball.y)
+        launch_vx = -(dx / (dist or 1)) * self.shot_speed * power
+        launch_vy = -(dy / (dist or 1)) * self.shot_speed * power
+        self.ball.vx = launch_vx
+        self.ball.vy = launch_vy
         self.ball.grounded = False
         self.shot_unlocked = False
         self.just_stopped = False
@@ -492,7 +506,20 @@ class GameApp:
         else:
             self.set_message("Удар!")
         self.audio.shot()
-        self.sync_room(pass_turn=False)
+        shot_event = None
+        if self.multiplayer.enabled:
+            self.local_shot_seq += 1
+            shot_event = {
+                "type": "SHOT",
+                "seq": int(self.local_shot_seq),
+                "playerId": self.multiplayer.player_id,
+                "levelIndex": self.level_index,
+                "x": launch_x,
+                "y": launch_y,
+                "vx": float(launch_vx),
+                "vy": float(launch_vy),
+            }
+        self.sync_room(pass_turn=False, shot_event=shot_event)
 
     def rect_collision(self, rx: float, ry: float, rw: float, rh: float) -> None:
         nx = clamp(self.ball.x, rx, rx + rw)
@@ -567,10 +594,10 @@ class GameApp:
         self.set_message(f"Матч завершён! Финальный бонус +{bonus}.")
         self.sync_room(pass_turn=False, allow_any_player=True)
 
-    def serialize_snapshot(self) -> dict[str, Any]:
+    def serialize_snapshot(self, shot_event: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.multiplayer.enabled:
             self._save_active_turn_state()
-        return {
+        payload = {
             "levelIndex": self.level_index,
             "strokes": self.strokes,
             "score": self.score,
@@ -588,6 +615,38 @@ class GameApp:
             "shotsRemaining": self.shots_remaining,
             "playerStates": self.player_states if self.multiplayer.enabled else None,
         }
+        if shot_event is not None:
+            payload["shotEvent"] = shot_event
+        return payload
+
+    def _process_shot_event(self, snap: dict[str, Any]) -> None:
+        if not self.multiplayer.enabled:
+            return
+        event = snap.get("shotEvent")
+        if not isinstance(event, dict):
+            return
+        player_id = str(event.get("playerId") or "")
+        if not player_id or player_id == self.multiplayer.player_id:
+            return
+        seq = int(event.get("seq") or 0)
+        if seq <= 0:
+            return
+        if seq <= int(self.last_remote_shot_seq.get(player_id, 0)):
+            return
+        if int(event.get("levelIndex", self.level_index)) != self.level_index:
+            return
+
+        self.last_remote_shot_seq[player_id] = seq
+        self._ensure_multiplayer_player_states()
+        state = self.player_states.setdefault(player_id, self._default_player_state())
+        state["ball"] = {
+            "x": float(event.get("x", self.level.start_x)),
+            "y": float(event.get("y", self.level.start_y)),
+            "vx": float(event.get("vx", 0.0)),
+            "vy": float(event.get("vy", 0.0)),
+            "grounded": False,
+        }
+        self.remote_active_shot_player_id = player_id
 
     def apply_snapshot(self, snap: dict[str, Any], preserve_local_turn: bool = False) -> None:
         if not snap:
@@ -614,6 +673,13 @@ class GameApp:
         if self.multiplayer.enabled:
             incoming_states = snap.get("playerStates")
             if isinstance(incoming_states, dict):
+                preserved_remote_ball: dict[str, Any] | None = None
+                active_remote_id = self.remote_active_shot_player_id
+                if active_remote_id:
+                    prev_state = self.player_states.get(active_remote_id) or {}
+                    prev_ball = prev_state.get("ball")
+                    if isinstance(prev_ball, dict):
+                        preserved_remote_ball = dict(prev_ball)
                 if preserve_local_turn and self.multiplayer.player_id:
                     self._save_active_turn_state()
                     local_state = self.player_states.get(self.multiplayer.player_id)
@@ -621,13 +687,18 @@ class GameApp:
                         incoming_states[self.multiplayer.player_id] = local_state
                 self.player_states = incoming_states
                 self._ensure_multiplayer_player_states()
+                if active_remote_id and preserved_remote_ball is not None:
+                    remote_state = self.player_states.get(active_remote_id)
+                    if isinstance(remote_state, dict):
+                        remote_state["ball"] = preserved_remote_ball
                 if self.multiplayer.turn_player_id:
                     self._load_turn_state(self.multiplayer.turn_player_id)
+            self._process_shot_event(snap)
 
-    def sync_room(self, pass_turn: bool, allow_any_player: bool = False) -> None:
+    def sync_room(self, pass_turn: bool, allow_any_player: bool = False, shot_event: dict[str, Any] | None = None) -> None:
         if not self.multiplayer.enabled:
             return
-        snapshot = self.serialize_snapshot()
+        snapshot = self.serialize_snapshot(shot_event=shot_event)
         if self.pending_sync:
             self.pending_sync["snapshot"] = snapshot
             self.pending_sync["pass_turn"] = bool(self.pending_sync.get("pass_turn") or pass_turn)
@@ -766,6 +837,8 @@ class GameApp:
             return
         if self.waiting_for_opponent:
             return
+        if self.multiplayer.enabled:
+            self._update_remote_shot(dt)
         if self.multiplayer.enabled and not self.is_my_turn():
             return
 
@@ -850,6 +923,89 @@ class GameApp:
                     self.open_quiz("Чекпоинт сохранён. Реши новую задачу.")
         else:
             self.just_stopped = False
+
+    def _update_remote_shot(self, dt: float) -> None:
+        player_id = self.remote_active_shot_player_id
+        if not player_id:
+            return
+        state = self.player_states.get(player_id)
+        if not isinstance(state, dict):
+            self.remote_active_shot_player_id = ""
+            return
+        ball = state.get("ball")
+        if not isinstance(ball, dict):
+            self.remote_active_shot_player_id = ""
+            return
+
+        x = float(ball.get("x", self.level.start_x))
+        y = float(ball.get("y", self.level.start_y))
+        vx = float(ball.get("vx", 0.0))
+        vy = float(ball.get("vy", 0.0))
+        grounded = bool(ball.get("grounded", False))
+
+        sub_step = 1 / 120
+        remaining = dt
+        while remaining > 0:
+            step = min(sub_step, remaining)
+            remaining -= step
+
+            grounded = False
+            vy += self.gravity * step
+            x += vx * step
+            y += vy * step
+
+            if x < self.ball.r:
+                x = self.ball.r
+                if vx < 0:
+                    vx *= -self.restitution
+            if x > WORLD_WIDTH - self.ball.r:
+                x = WORLD_WIDTH - self.ball.r
+                if vx > 0:
+                    vx *= -self.restitution
+            if y < self.ball.r:
+                y = self.ball.r
+                if vy < 0:
+                    vy *= -self.restitution
+            if y > WORLD_HEIGHT - self.ball.r:
+                y = WORLD_HEIGHT - self.ball.r
+                if vy > 0:
+                    vy *= -self.restitution
+                    if abs(vy) < 70:
+                        vy = 0
+                    grounded = True
+
+            for platform in self.level.platforms:
+                x, y, vx, vy, grounded = self._preview_rect_collision(
+                    x,
+                    y,
+                    vx,
+                    vy,
+                    grounded,
+                    platform.x,
+                    platform.y,
+                    platform.w,
+                    platform.h,
+                )
+
+            if grounded:
+                vx *= ROLL_DAMPING
+            else:
+                vx *= AIR_DAMPING
+                vy *= AIR_DAMPING
+
+        if math.hypot(vx, vy) <= STOP_SPEED:
+            vx = 0.0
+            vy = 0.0
+            grounded = True
+            self.remote_active_shot_player_id = ""
+
+        state["ball"] = {
+            "x": float(x),
+            "y": float(y),
+            "vx": float(vx),
+            "vy": float(vy),
+            "grounded": bool(grounded),
+        }
 
     def draw(self) -> None:
         self.align_camera()
